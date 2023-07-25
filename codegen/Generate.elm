@@ -64,7 +64,7 @@ files : Generate.Directory -> List Elm.File
 files ((Directory dir) as directory) =
     case getEnglishData directory of
         Err e ->
-            error "Error" e
+            [ error "Error" e ]
 
         Ok ( languagesEnglishDict, territoriesEnglishDict ) ->
             let
@@ -74,33 +74,55 @@ files ((Directory dir) as directory) =
                         |> Set.fromList
                         |> Set.insert "Pidgin"
                         |> Set.insert "Gaelic"
+
+                ( allDictionaries, allErrors ) =
+                    dir.directories
+                        |> Dict.keys
+                        |> List.foldl
+                            (\key ( dictAcc, errAcc ) ->
+                                if key == "und" then
+                                    -- Unknown language
+                                    ( dictAcc, errAcc )
+
+                                else
+                                    case getLanguageName languageNames languagesEnglishDict territoriesEnglishDict key of
+                                        Just ( languageName, splatLanguageName ) ->
+                                            case getTerritories key directory of
+                                                Ok territories ->
+                                                    ( Dict.insert splatLanguageName
+                                                        { languageName = languageName
+                                                        , territories = territories
+                                                        }
+                                                        dictAcc
+                                                    , errAcc
+                                                    )
+
+                                                Err e ->
+                                                    ( dictAcc, error languageName e :: errAcc )
+
+                                        Nothing ->
+                                            ( dictAcc
+                                            , error key
+                                                ("Failed to get language name, or split it, language name is "
+                                                    ++ Maybe.withDefault "Nothing" (Dict.get key languagesEnglishDict)
+                                                )
+                                                :: errAcc
+                                            )
+                            )
+                            ( Dict.empty, [] )
+
+                allFiles : List Elm.File
+                allFiles =
+                    allDictionaries
+                        |> Dict.toList
+                        |> List.map
+                            (\( splatLanguageName, { languageName, territories } ) ->
+                                Elm.file ("Cldr" :: splatLanguageName)
+                                    [ countryCodeToNameDeclaration languageName territories
+                                    ]
+                            )
             in
-            dir.directories
-                |> Dict.keys
-                |> List.concatMap
-                    (\key ->
-                        if key == "und" then
-                            -- Unknown language
-                            []
-
-                        else
-                            case getLanguageName languageNames languagesEnglishDict territoriesEnglishDict key of
-                                Just ( languageName, splatLanguageName ) ->
-                                    case getTerritories key directory of
-                                        Ok territories ->
-                                            [ Elm.file ("Cldr" :: splatLanguageName)
-                                                [ countryCodeToNameDeclaration languageName territories
-                                                ]
-                                            ]
-
-                                        Err e ->
-                                            error languageName e
-
-                                Nothing ->
-                                    error key <|
-                                        "Failed to get language name, or split it, language name is "
-                                            ++ Maybe.withDefault "Nothing" (Dict.get key languagesEnglishDict)
-                    )
+            allErrors ++ allFiles
 
 
 getLanguageName : Set String -> Dict String String -> Dict String String -> String -> Maybe ( String, List String )
@@ -333,13 +355,12 @@ splitLanguage languagesNames lang =
             Nothing
 
 
-error : String -> String -> List Elm.File
+error : String -> String -> Elm.File
 error file msg =
-    [ Elm.file [ file ]
+    Elm.file [ file ]
         [ Elm.declaration "error" <|
             Elm.string msg
         ]
-    ]
 
 
 decodeLanguages : String -> Result Json.Decode.Error (Dict String String)
