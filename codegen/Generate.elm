@@ -84,90 +84,7 @@ files ((Directory dir) as directory) =
                             []
 
                         else
-                            let
-                                withSuffix suffix prefix =
-                                    Maybe.map
-                                        (\( languageName, languageSplit ) ->
-                                            ( languageName ++ " (" ++ suffix ++ ")"
-                                            , languageSplit ++ [ suffix ]
-                                            )
-                                        )
-                                        (standard prefix)
-
-                                standard : String -> Maybe ( String, List String )
-                                standard needle =
-                                    case String.split "-" needle of
-                                        [ prefix, "Guru" ] ->
-                                            withSuffix "Gurmukhi" prefix
-
-                                        [ prefix, "Hans" ] ->
-                                            withSuffix "Simplified" prefix
-
-                                        [ prefix, "Hant" ] ->
-                                            withSuffix "Traditional" prefix
-
-                                        [ prefix, "Latn" ] ->
-                                            withSuffix "Latin" prefix
-
-                                        [ prefix, "Arab" ] ->
-                                            withSuffix "Arabic" prefix
-
-                                        [ prefix, "tarask" ] ->
-                                            withSuffix "Taraškievica" prefix
-
-                                        [ prefix, "Cyrl" ] ->
-                                            withSuffix "Cyrillic" prefix
-
-                                        [ prefix, "polyton" ] ->
-                                            withSuffix "Polytonic" prefix
-
-                                        [ "ca", "ES", "valencia" ] ->
-                                            Just
-                                                ( "Catalan (Spain, Valencian)"
-                                                , [ "Catalan", "Spain", "Valencia" ]
-                                                )
-
-                                        _ ->
-                                            Dict.get needle languagesEnglishDict
-                                                |> Maybe.andThen
-                                                    (\languageName ->
-                                                        Maybe.map
-                                                            (Tuple.pair languageName)
-                                                            (splitLanguage languageNames languageName)
-                                                    )
-
-                                tryLanguageAndTerritory language territory =
-                                    Maybe.Extra.orLazy
-                                        (Maybe.map2
-                                            (\( languageName, languageSplit ) territoryName ->
-                                                ( languageName ++ " - " ++ territoryName
-                                                , languageSplit
-                                                    ++ [ String.replace " " "" <|
-                                                            cleanName territoryName
-                                                       ]
-                                                )
-                                            )
-                                            (standard language)
-                                            (Dict.get territory territoriesEnglishDict)
-                                        )
-                                        (\_ -> standard key)
-
-                                maybeLanguageName : Maybe ( String, List String )
-                                maybeLanguageName =
-                                    case String.split "-" key of
-                                        [ _ ] ->
-                                            standard key
-
-                                        [ prefix, suffix ] ->
-                                            tryLanguageAndTerritory prefix suffix
-
-                                        [ prefix1, prefix2, suffix ] ->
-                                            tryLanguageAndTerritory (prefix1 ++ "-" ++ prefix2) suffix
-
-                                        _ ->
-                                            Nothing
-                            in
-                            case maybeLanguageName of
+                            case getLanguageName languageNames languagesEnglishDict territoriesEnglishDict key of
                                 Just ( languageName, splatLanguageName ) ->
                                     case getTerritories key directory of
                                         Ok territories ->
@@ -184,6 +101,96 @@ files ((Directory dir) as directory) =
                                         "Failed to get language name, or split it, language name is "
                                             ++ Maybe.withDefault "Nothing" (Dict.get key languagesEnglishDict)
                     )
+
+
+getLanguageName : Set String -> Dict String String -> Dict String String -> String -> Maybe ( String, List String )
+getLanguageName languageNames languagesEnglishDict territoriesEnglishDict key =
+    let
+        standard : String -> Maybe ( String, List String )
+        standard needle =
+            Dict.get needle languagesEnglishDict
+                |> Maybe.andThen
+                    (\languageName ->
+                        Maybe.map
+                            (Tuple.pair languageName)
+                            (splitLanguage languageNames languageName)
+                    )
+
+        withSuffix : String -> String -> Maybe ( String, List String )
+        withSuffix suffix prefix =
+            Maybe.map
+                (\( languageName, languageSplit ) ->
+                    ( languageName ++ " (" ++ suffix ++ ")"
+                    , languageSplit ++ [ suffix ]
+                    )
+                )
+                (standard prefix)
+
+        checkSuffix : String -> Maybe ( String, List String )
+        checkSuffix needle =
+            case String.split "-" needle of
+                [ prefix, "Guru" ] ->
+                    withSuffix "Gurmukhi" prefix
+
+                [ prefix, "Hans" ] ->
+                    withSuffix "Simplified" prefix
+
+                [ prefix, "Hant" ] ->
+                    withSuffix "Traditional" prefix
+
+                [ prefix, "Latn" ] ->
+                    withSuffix "Latin" prefix
+
+                [ prefix, "Arab" ] ->
+                    withSuffix "Arabic" prefix
+
+                [ prefix, "tarask" ] ->
+                    withSuffix "Taraškievica" prefix
+
+                [ prefix, "Cyrl" ] ->
+                    withSuffix "Cyrillic" prefix
+
+                [ prefix, "polyton" ] ->
+                    withSuffix "Polytonic" prefix
+
+                _ ->
+                    standard needle
+
+        tryLanguageAndTerritory : String -> String -> Maybe ( String, List String )
+        tryLanguageAndTerritory language territory =
+            Maybe.Extra.orLazy
+                (Maybe.map2
+                    (\( languageName, languageSplit ) territoryName ->
+                        ( languageName ++ " - " ++ territoryName
+                        , languageSplit
+                            ++ [ String.replace " " "" <|
+                                    cleanName territoryName
+                               ]
+                        )
+                    )
+                    (checkSuffix language)
+                    (Dict.get territory territoriesEnglishDict)
+                )
+                (\_ -> checkSuffix key)
+    in
+    case String.split "-" key of
+        [ "ca", "ES", "valencia" ] ->
+            Just
+                ( "Catalan (Spain, Valencian)"
+                , [ "Catalan", "Spain", "Valencia" ]
+                )
+
+        [ _ ] ->
+            standard key
+
+        [ prefix, suffix ] ->
+            tryLanguageAndTerritory prefix suffix
+
+        [ prefix1, prefix2, suffix ] ->
+            tryLanguageAndTerritory (prefix1 ++ "-" ++ prefix2) suffix
+
+        _ ->
+            Nothing
 
 
 getEnglishData : Directory -> Result String ( Dict String String, Dict String String )
