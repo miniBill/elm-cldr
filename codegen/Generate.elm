@@ -10,6 +10,9 @@ import Gen.CodeGen.Generate as Generate exposing (Directory(..))
 import Iso3166
 import Json.Decode
 import Json.Encode
+import Maybe.Extra
+import Set exposing (Set)
+import String.Extra
 
 
 main : Program Json.Encode.Value () ()
@@ -58,58 +61,166 @@ mainFile =
 
 
 files : Generate.Directory -> List Elm.File
-files (Directory directory) =
-    case Dict.get "en" directory.directories of
-        Just (Directory en) ->
-            case
-                Dict.get "languages.json" en.files
-            of
-                Just languagesJson ->
-                    case decodeLanguages languagesJson of
-                        Ok languagesDict ->
-                            directory.directories
-                                |> Dict.toList
-                                |> List.concatMap
-                                    (\( key, Directory subdirectory ) ->
-                                        if key == "und" then
-                                            -- Unknown language
-                                            []
+files ((Directory dir) as directory) =
+    case getEnglishData directory of
+        Err e ->
+            error "Error" e
 
-                                        else
-                                            case Dict.get key languagesDict of
-                                                Just languageName ->
-                                                    case splitLanguage languageName of
-                                                        Just splatLanguageName ->
-                                                            case Dict.get "territories.json" subdirectory.files of
-                                                                Just territoriesJson ->
-                                                                    case decodeTerritories key territoriesJson of
-                                                                        Ok territories ->
-                                                                            [ Elm.file ("Cldr" :: splatLanguageName)
-                                                                                [ countryCodeToNameDeclaration languageName territories
-                                                                                ]
-                                                                            ]
+        Ok ( languagesEnglishDict, territoriesEnglishDict ) ->
+            let
+                languageNames : Set String
+                languageNames =
+                    Dict.values languagesEnglishDict
+                        |> Set.fromList
+                        |> Set.insert "Pidgin"
+                        |> Set.insert "Gaelic"
+            in
+            dir.directories
+                |> Dict.keys
+                |> List.concatMap
+                    (\key ->
+                        if key == "und" then
+                            -- Unknown language
+                            []
 
-                                                                        Err e ->
-                                                                            error languageName <| "'territories.json' decoding failed: " ++ Json.Decode.errorToString e
+                        else
+                            let
+                                withSuffix suffix prefix =
+                                    Maybe.map
+                                        (\( languageName, languageSplit ) ->
+                                            ( languageName ++ " (" ++ suffix ++ ")"
+                                            , languageSplit ++ [ suffix ]
+                                            )
+                                        )
+                                        (standard prefix)
 
-                                                                Nothing ->
-                                                                    error languageName <| "Couldn't split language name"
+                                standard : String -> Maybe ( String, List String )
+                                standard needle =
+                                    case String.split "-" needle of
+                                        [ prefix, "Guru" ] ->
+                                            withSuffix "Gurmukhi" prefix
 
-                                                        Nothing ->
-                                                            error languageName <| "'territories.json' not found"
+                                        [ prefix, "Hans" ] ->
+                                            withSuffix "Simplified" prefix
 
-                                                Nothing ->
-                                                    []
-                                    )
+                                        [ prefix, "Hant" ] ->
+                                            withSuffix "Traditional" prefix
 
-                        Err e ->
-                            error "Error" <| "'languages.json' decoding failed: " ++ Json.Decode.errorToString e
+                                        [ prefix, "Latn" ] ->
+                                            withSuffix "Latin" prefix
+
+                                        [ prefix, "Arab" ] ->
+                                            withSuffix "Arabic" prefix
+
+                                        [ prefix, "tarask" ] ->
+                                            withSuffix "Taraškievica" prefix
+
+                                        [ prefix, "Cyrl" ] ->
+                                            withSuffix "Cyrillic" prefix
+
+                                        [ prefix, "polyton" ] ->
+                                            withSuffix "Polytonic" prefix
+
+                                        [ "ca", "ES", "valencia" ] ->
+                                            Just
+                                                ( "Catalan (Spain, Valencian)"
+                                                , [ "Catalan", "Spain", "Valencia" ]
+                                                )
+
+                                        _ ->
+                                            Dict.get needle languagesEnglishDict
+                                                |> Maybe.andThen
+                                                    (\languageName ->
+                                                        Maybe.map
+                                                            (Tuple.pair languageName)
+                                                            (splitLanguage languageNames languageName)
+                                                    )
+
+                                tryLanguageAndTerritory language territory =
+                                    Maybe.Extra.orLazy
+                                        (Maybe.map2
+                                            (\( languageName, languageSplit ) territoryName ->
+                                                ( languageName ++ " - " ++ territoryName
+                                                , languageSplit
+                                                    ++ [ String.replace " " "" <|
+                                                            cleanName territoryName
+                                                       ]
+                                                )
+                                            )
+                                            (standard language)
+                                            (Dict.get territory territoriesEnglishDict)
+                                        )
+                                        (\_ -> standard key)
+
+                                maybeLanguageName : Maybe ( String, List String )
+                                maybeLanguageName =
+                                    case String.split "-" key of
+                                        [ _ ] ->
+                                            standard key
+
+                                        [ prefix, suffix ] ->
+                                            tryLanguageAndTerritory prefix suffix
+
+                                        [ prefix1, prefix2, suffix ] ->
+                                            tryLanguageAndTerritory (prefix1 ++ "-" ++ prefix2) suffix
+
+                                        _ ->
+                                            Nothing
+                            in
+                            case maybeLanguageName of
+                                Just ( languageName, splatLanguageName ) ->
+                                    case getTerritories key directory of
+                                        Ok territories ->
+                                            [ Elm.file ("Cldr" :: splatLanguageName)
+                                                [ countryCodeToNameDeclaration languageName territories
+                                                ]
+                                            ]
+
+                                        Err e ->
+                                            error languageName e
+
+                                Nothing ->
+                                    error key <|
+                                        "Failed to get language name, or split it, language name is "
+                                            ++ Maybe.withDefault "Nothing" (Dict.get key languagesEnglishDict)
+                    )
+
+
+getEnglishData : Directory -> Result String ( Dict String String, Dict String String )
+getEnglishData directory =
+    Result.map2 Tuple.pair
+        (getLanguages "en" directory)
+        (getTerritories "en" directory)
+
+
+getTerritories : String -> Directory -> Result String (Dict String String)
+getTerritories key (Directory directory) =
+    case Dict.get key directory.directories of
+        Just (Directory subdirectory) ->
+            case Dict.get "territories.json" subdirectory.files of
+                Just territoriesJson ->
+                    Result.mapError (\e -> "\"territories.json\": decoding failed: " ++ Json.Decode.errorToString e) <| decodeTerritories key territoriesJson
 
                 Nothing ->
-                    error "Error" "'languages.json' not found"
+                    Err "Could not find \"territories.json\""
 
         Nothing ->
-            error "Error" "'en' directory not found"
+            Err <| "Could not find directory \"" ++ key ++ "\""
+
+
+getLanguages : String -> Directory -> Result String (Dict String String)
+getLanguages key (Directory directory) =
+    case Dict.get key directory.directories of
+        Just (Directory subdirectory) ->
+            case Dict.get "languages.json" subdirectory.files of
+                Just languagesJson ->
+                    Result.mapError (\e -> "\"languages.json\": decoding failed: " ++ Json.Decode.errorToString e) <| decodeLanguages languagesJson
+
+                Nothing ->
+                    Err "Could not find \"languages.json\""
+
+        Nothing ->
+            Err <| "Could not find directory \"" ++ key ++ "\""
 
 
 decodeTerritories : String -> String -> Result Json.Decode.Error (Dict String String)
@@ -169,40 +280,44 @@ countryCodeAnnotation =
     Annotation.namedWith [ "Cldr" ] "CountryCode" []
 
 
-splitLanguage : String -> Maybe (List String)
-splitLanguage lang =
-    let
-        suffixes =
-            [ "Chinese"
-            , "English"
-            , "French"
-            , "Gaelic"
-            , "German"
-            , "Pidgin"
-            , "Portuguese"
-            , "Spanish"
-            , "Swahili"
-            ]
-    in
-    case String.split " " lang of
+cleanName : String -> String
+cleanName name =
+    name
+        |> String.replace "." ""
+        |> String.replace "&" "And"
+        |> String.replace "-" ""
+        |> String.replace "’" ""
+        |> String.replace "(" ""
+        |> String.replace ")" ""
+        |> String.Extra.toSentenceCase
+
+
+splitLanguage : Set String -> String -> Maybe (List String)
+splitLanguage languagesNames lang =
+    case
+        cleanName lang
+            |> String.split " "
+            |> List.reverse
+    of
         [ atom ] ->
             Just [ atom ]
 
-        [ "Hindi", "(Latin)" ] ->
+        [ "(Latin)", "Hindi" ] ->
             Just [ "Hindi", "Latin" ]
 
-        [ "Latin", "American", "Spanish" ] ->
-            Just [ "Spanish", "LatinAmerican" ]
-
-        [ "Swiss", "High", "German" ] ->
-            Just [ "German", "Swiss" ]
-
-        [ "Norwegian", suffix ] ->
-            Just [ "Norwegian", suffix ]
-
         [ prefix, suffix ] ->
-            if List.member suffix suffixes then
+            if Set.member suffix languagesNames then
                 Just [ suffix, prefix ]
+
+            else if Set.member prefix languagesNames then
+                Just [ prefix, suffix ]
+
+            else
+                Nothing
+
+        head :: tail ->
+            if Set.member head languagesNames then
+                Just [ head, String.concat <| List.reverse tail ]
 
             else
                 Nothing
