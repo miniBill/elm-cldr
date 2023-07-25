@@ -28,6 +28,7 @@ mainFile =
         [ allCountryCodes
             |> List.map Elm.variant
             |> Elm.customType "CountryCode"
+            |> Elm.withDocumentation "All the supported country codes. `GT` and `LT` are defined in Basics so we define them as `GT_` and `LT_`."
             |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
         , (\countryCodeExpr ->
             allCountryCodes
@@ -44,12 +45,14 @@ mainFile =
           )
             |> Elm.fn ( "countryCodeExpr", Just ann )
             |> Elm.declaration "toAlpha2"
+            |> Elm.withDocumentation "Two-letter `ISO 3166-1 alpha-2` code from `CountryCode`."
             |> Elm.expose
         , allCountryCodes
             |> List.map (\countryCode -> Elm.val countryCode)
             |> Elm.list
             |> Elm.withType (Annotation.list ann)
             |> Elm.declaration "all"
+            |> Elm.withDocumentation "All `CountryCode`s sorted alphabetically."
             |> Elm.expose
         ]
 
@@ -82,7 +85,7 @@ files (Directory directory) =
                                                                     case decodeTerritories key territoriesJson of
                                                                         Ok territories ->
                                                                             [ Elm.file ("Cldr" :: splatLanguageName)
-                                                                                [ countryCodeToNameDeclaration territories
+                                                                                [ countryCodeToNameDeclaration languageName territories
                                                                                 ]
                                                                             ]
 
@@ -141,8 +144,8 @@ toUpper input =
         |> String.replace "LT" "LT_"
 
 
-countryCodeToNameDeclaration : Dict String String -> Elm.Declaration
-countryCodeToNameDeclaration territories =
+countryCodeToNameDeclaration : String -> Dict String String -> Elm.Declaration
+countryCodeToNameDeclaration languageName territories =
     Elm.fn ( "countryCode", Just countryCodeAnnotation )
         (\countryCodeExpr ->
             allCountryCodes
@@ -157,6 +160,7 @@ countryCodeToNameDeclaration territories =
                 |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
         )
         |> Elm.declaration "countryCodeToName"
+        |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".")
         |> Elm.expose
 
 
