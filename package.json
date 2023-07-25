@@ -1,6 +1,7 @@
 {
   "devDependencies": {
-    "elm-codegen": "^0.5.0"
+    "elm-codegen": "^0.5.0",
+    "elm-review": "^2.10.2"
   },
   "author": "miniBill",
   "license": "BSD-3-Clause"
