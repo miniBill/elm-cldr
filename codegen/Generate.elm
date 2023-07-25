@@ -6,6 +6,7 @@ import Dict exposing (Dict)
 import Elm
 import Elm.Annotation as Annotation exposing (Annotation)
 import Elm.Case
+import Elm.Case.Branch
 import Gen.CodeGen.Generate as Generate exposing (Directory(..))
 import Iso3166
 import Json.Decode
@@ -117,8 +118,27 @@ files ((Directory dir) as directory) =
                         |> Dict.toList
                         |> List.map
                             (\( splatLanguageName, { languageName, territories } ) ->
+                                let
+                                    parentModule : List String
+                                    parentModule =
+                                        splatLanguageName
+                                            |> List.reverse
+                                            |> List.drop 1
+                                            |> List.reverse
+
+                                    parentTerritories : Dict String String
+                                    parentTerritories =
+                                        allDictionaries
+                                            |> Dict.get parentModule
+                                            |> Maybe.map .territories
+                                            |> Maybe.withDefault Dict.empty
+                                in
                                 Elm.file ("Cldr" :: splatLanguageName)
-                                    [ countryCodeToNameDeclaration languageName territories
+                                    [ countryCodeToNameDeclaration
+                                        parentModule
+                                        parentTerritories
+                                        languageName
+                                        territories
                                     ]
                             )
             in
@@ -284,21 +304,60 @@ toUpper input =
         |> String.replace "LT" "LT_"
 
 
-countryCodeToNameDeclaration : String -> Dict String String -> Elm.Declaration
-countryCodeToNameDeclaration languageName territories =
-    Elm.fn ( "countryCode", Just countryCodeAnnotation )
-        (\countryCodeExpr ->
+countryCodeToNameDeclaration :
+    List String
+    -> Dict String String
+    -> String
+    -> Dict String String
+    -> Elm.Declaration
+countryCodeToNameDeclaration parentModule parentTerritories languageName territories =
+    let
+        parentFunction =
+            Elm.value
+                { importFrom = "Cldr" :: parentModule
+                , name = "countryCodeToName"
+                , annotation = Just <| Annotation.function [ countryCodeAnnotation ] Annotation.string
+                }
+
+        branches : List Elm.Case.Branch
+        branches =
             allCountryCodes
                 |> List.filterMap
                     (\countryCode ->
-                        Dict.get (String.replace "_" "" countryCode) territories
-                            |> Maybe.map
+                        let
+                            countryCodeClean : String
+                            countryCodeClean =
+                                String.replace "_" "" countryCode
+                        in
+                        Dict.get countryCodeClean territories
+                            |> Maybe.andThen
                                 (\name ->
-                                    Elm.Case.branch0 countryCode (Elm.string name)
+                                    if Just name == Dict.get countryCodeClean parentTerritories then
+                                        Nothing
+
+                                    else
+                                        Just <| Elm.Case.branch0 countryCode (Elm.string name)
                                 )
                     )
-                |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
-        )
+    in
+    (if List.isEmpty branches then
+        parentFunction
+
+     else
+        Elm.fn ( "countryCode", Just countryCodeAnnotation )
+            (\countryCodeExpr ->
+                (if List.length branches == List.length allCountryCodes then
+                    branches
+
+                 else
+                    branches
+                        ++ [ Elm.Case.Branch.ignore
+                                (Elm.apply parentFunction [ countryCodeExpr ])
+                           ]
+                )
+                    |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
+            )
+    )
         |> Elm.declaration "countryCodeToName"
         |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".")
         |> Elm.expose
