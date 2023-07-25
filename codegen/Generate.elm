@@ -387,7 +387,6 @@ countryCodeToNameDeclaration parent languageName territories =
                             |> Maybe.map (\name -> "    " ++ countryCodeClean ++ " " ++ name)
                     )
                 |> String.join "\n"
-                |> always ""
     in
     if List.isEmpty branches then
         parentFunction
