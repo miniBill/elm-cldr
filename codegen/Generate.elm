@@ -121,10 +121,34 @@ files ((Directory dir) as directory) =
                                 let
                                     parentModule : List String
                                     parentModule =
-                                        splatLanguageName
-                                            |> List.reverse
-                                            |> List.drop 1
-                                            |> List.reverse
+                                        case splatLanguageName of
+                                            [ "Spanish", "Argentina" ] ->
+                                                [ "Spanish" ]
+
+                                            [ "Spanish", _ ] ->
+                                                [ "Spanish", "Argentina" ]
+
+                                            [ "English", "UnitedKingdom" ] ->
+                                                [ "English" ]
+
+                                            [ "English", _ ] ->
+                                                if Dict.get "MF" territories == Just "St. Martin" then
+                                                    [ "English" ]
+
+                                                else
+                                                    [ "English", "UnitedKingdom" ]
+
+                                            [ "Portuguese", "Portugal" ] ->
+                                                [ "Portuguese" ]
+
+                                            [ "Portuguese", _ ] ->
+                                                [ "Portuguese", "Portugal" ]
+
+                                            _ ->
+                                                splatLanguageName
+                                                    |> List.reverse
+                                                    |> List.drop 1
+                                                    |> List.reverse
 
                                     parent :
                                         { languageName : String
@@ -226,7 +250,7 @@ getLanguageName languageNames languagesEnglishDict territoriesEnglishDict key =
         [ "ca", "ES", "valencia" ] ->
             Just
                 ( "Catalan (Spain, Valencian)"
-                , [ "Catalan", "Spain", "Valencia" ]
+                , [ "Catalan", "Valencia" ]
                 )
 
         [ _ ] ->
@@ -363,6 +387,7 @@ countryCodeToNameDeclaration parent languageName territories =
                             |> Maybe.map (\name -> "    " ++ countryCodeClean ++ " " ++ name)
                     )
                 |> String.join "\n"
+                |> always ""
     in
     if List.isEmpty branches then
         parentFunction
