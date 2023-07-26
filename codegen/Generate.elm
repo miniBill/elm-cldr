@@ -18,15 +18,70 @@ import String.Extra
 
 main : Program Json.Encode.Value () ()
 main =
-    Generate.fromDirectory (\directory -> mainFile :: files directory)
+    Generate.fromDirectory
+        (\directory ->
+            case getEnglishData directory of
+                Err e ->
+                    [ error "Error" e ]
+
+                Ok ( languagesEnglishDict, territoriesEnglishDict ) ->
+                    let
+                        languageNames : Set String
+                        languageNames =
+                            Dict.values languagesEnglishDict
+                                |> Set.fromList
+                                |> Set.insert "Pidgin"
+                                |> Set.insert "Gaelic"
+
+                        shared =
+                            { languageNames = languageNames
+                            , languagesEnglishDict = languagesEnglishDict
+                            , territoriesEnglishDict = territoriesEnglishDict
+                            }
+                    in
+                    mainFile directory shared
+                        :: files directory shared
+        )
 
 
-mainFile : Elm.File
-mainFile =
+type alias Shared =
+    { languageNames : Set String
+    , languagesEnglishDict : Dict String String
+    , territoriesEnglishDict : Dict String String
+    }
+
+
+mainFile : Directory -> Shared -> Elm.File
+mainFile (Directory directory) shared =
     let
-        ann : Annotation
-        ann =
+        countryCodeAnnotation : Annotation
+        countryCodeAnnotation =
             Annotation.named [] "CountryCode"
+
+        localeAnnotation : Annotation
+        localeAnnotation =
+            Annotation.named [] "Locale"
+
+        allLocales : List { key : String, name : String, moduleName : List String, variant : String }
+        allLocales =
+            directory.directories
+                |> Dict.keys
+                |> List.filterMap
+                    (\key ->
+                        getLanguageName shared key
+                            |> Maybe.map
+                                (\( name, moduleName ) ->
+                                    { key = key
+                                    , name = name
+                                    , moduleName = moduleName
+                                    , variant =
+                                        key
+                                            |> String.split "-"
+                                            |> List.map String.Extra.toSentenceCase
+                                            |> String.concat
+                                    }
+                                )
+                    )
     in
     Elm.file [ "Cldr" ]
         [ allCountryCodes
@@ -34,6 +89,20 @@ mainFile =
             |> Elm.customType "CountryCode"
             |> Elm.withDocumentation "All the supported country codes. `GT` and `LT` are defined in Basics so we define them as `GT_` and `LT_`."
             |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
+        , allLocales
+            |> List.map (\{ variant } -> Elm.variant variant)
+            |> Elm.customType "Locale"
+            |> Elm.withDocumentation "All the supported locales."
+            |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
+        , (\locale ->
+            allLocales
+                |> List.map (\{ variant, name } -> Elm.Case.branch0 variant (Elm.string name))
+                |> Elm.Case.custom locale localeAnnotation
+          )
+            |> Elm.fn ( "locale", Just localeAnnotation )
+            |> Elm.declaration "localeToName"
+            |> Elm.withDocumentation "Get the name of a locale."
+            |> Elm.exposeWith { exposeConstructor = False, group = Nothing }
         , (\countryCodeExpr ->
             allCountryCodes
                 |> List.map
@@ -45,225 +114,217 @@ mainFile =
                                 |> Elm.string
                             )
                     )
-                |> Elm.Case.custom countryCodeExpr ann
+                |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
           )
-            |> Elm.fn ( "countryCodeExpr", Just ann )
+            |> Elm.fn ( "countryCodeExpr", Just countryCodeAnnotation )
             |> Elm.declaration "toAlpha2"
             |> Elm.withDocumentation "Two-letter `ISO 3166-1 alpha-2` code from `CountryCode`."
             |> Elm.expose
         , allCountryCodes
             |> List.map (\countryCode -> Elm.val countryCode)
             |> Elm.list
-            |> Elm.withType (Annotation.list ann)
+            |> Elm.withType (Annotation.list countryCodeAnnotation)
             |> Elm.declaration "all"
             |> Elm.withDocumentation "All `CountryCode`s sorted alphabetically."
             |> Elm.expose
         ]
 
 
-files : Generate.Directory -> List Elm.File
-files ((Directory dir) as directory) =
-    case getEnglishData directory of
-        Err e ->
-            [ error "Error" e ]
-
-        Ok ( languagesEnglishDict, territoriesEnglishDict ) ->
-            let
-                languageNames : Set String
-                languageNames =
-                    Dict.values languagesEnglishDict
-                        |> Set.fromList
-                        |> Set.insert "Pidgin"
-                        |> Set.insert "Gaelic"
-
-                ( allDictionaries, allErrors ) =
-                    dir.directories
-                        |> Dict.keys
-                        |> List.foldl
-                            (\key ( dictAcc, errAcc ) ->
-                                if key == "und" then
-                                    -- Unknown language
-                                    ( dictAcc, errAcc )
-
-                                else
-                                    case getLanguageName languageNames languagesEnglishDict territoriesEnglishDict key of
-                                        Just ( languageName, splatLanguageName ) ->
-                                            case getTerritories key directory of
-                                                Ok territories ->
-                                                    ( Dict.insert splatLanguageName
-                                                        { languageName = languageName
-                                                        , territories = territories
-                                                        }
-                                                        dictAcc
-                                                    , errAcc
-                                                    )
-
-                                                Err e ->
-                                                    ( dictAcc, error languageName e :: errAcc )
-
-                                        Nothing ->
-                                            ( dictAcc
-                                            , error key
-                                                ("Failed to get language name, or split it, language name is "
-                                                    ++ Maybe.withDefault "Nothing" (Dict.get key languagesEnglishDict)
-                                                )
-                                                :: errAcc
-                                            )
-                            )
-                            ( Dict.empty, [] )
-
-                allFiles : List Elm.File
-                allFiles =
-                    allDictionaries
-                        |> Dict.toList
-                        |> List.map
-                            (\( splatLanguageName, { languageName, territories } ) ->
-                                let
-                                    parentModule : List String
-                                    parentModule =
-                                        case splatLanguageName of
-                                            [ "Spanish", "Argentina" ] ->
-                                                [ "Spanish" ]
-
-                                            [ "Spanish", _ ] ->
-                                                [ "Spanish", "Argentina" ]
-
-                                            [ "English", "UnitedKingdom" ] ->
-                                                [ "English" ]
-
-                                            [ "English", _ ] ->
-                                                if Dict.get "MF" territories == Just "St. Martin" then
-                                                    [ "English" ]
-
-                                                else
-                                                    [ "English", "UnitedKingdom" ]
-
-                                            [ "Portuguese", "Portugal" ] ->
-                                                [ "Portuguese" ]
-
-                                            [ "Portuguese", _ ] ->
-                                                [ "Portuguese", "Portugal" ]
-
-                                            _ ->
-                                                splatLanguageName
-                                                    |> List.reverse
-                                                    |> List.drop 1
-                                                    |> List.reverse
-
-                                    parent :
-                                        { languageName : String
-                                        , territories : Dict String String
-                                        }
-                                    parent =
-                                        allDictionaries
-                                            |> Dict.get parentModule
-                                            |> Maybe.withDefault
-                                                { languageName = ""
-                                                , territories = Dict.empty
-                                                }
-                                in
-                                Elm.file ("Cldr" :: splatLanguageName)
-                                    [ countryCodeToNameDeclaration
-                                        { languageName = parent.languageName
-                                        , moduleName = parentModule
-                                        , territories = parent.territories
-                                        }
-                                        languageName
-                                        territories
-                                    ]
-                            )
-            in
-            allErrors ++ allFiles
-
-
-getLanguageName : Set String -> Dict String String -> Dict String String -> String -> Maybe ( String, List String )
-getLanguageName languageNames languagesEnglishDict territoriesEnglishDict key =
+files : Directory -> Shared -> List Elm.File
+files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
     let
-        standard : String -> Maybe ( String, List String )
-        standard needle =
-            Dict.get needle languagesEnglishDict
-                |> Maybe.andThen
-                    (\languageName ->
-                        Maybe.map
-                            (Tuple.pair languageName)
-                            (splitLanguage languageNames languageName)
+        ( allDictionaries, allErrors ) =
+            dir.directories
+                |> Dict.keys
+                |> List.foldl
+                    (\key ( dictAcc, errAcc ) ->
+                        if key == "und" then
+                            -- Unknown language
+                            ( dictAcc, errAcc )
+
+                        else
+                            case getLanguageName shared key of
+                                Just ( languageName, splatLanguageName ) ->
+                                    case getTerritories key directory of
+                                        Ok territories ->
+                                            ( Dict.insert splatLanguageName
+                                                { languageName = languageName
+                                                , territories = territories
+                                                }
+                                                dictAcc
+                                            , errAcc
+                                            )
+
+                                        Err e ->
+                                            ( dictAcc, error languageName e :: errAcc )
+
+                                Nothing ->
+                                    ( dictAcc
+                                    , error key
+                                        ("Failed to get language name, or split it, language name is "
+                                            ++ Maybe.withDefault "Nothing" (Dict.get key languagesEnglishDict)
+                                        )
+                                        :: errAcc
+                                    )
                     )
+                    ( Dict.empty, [] )
 
-        withSuffix : String -> String -> Maybe ( String, List String )
-        withSuffix suffix prefix =
-            Maybe.map
-                (\( languageName, languageSplit ) ->
-                    ( languageName ++ " (" ++ suffix ++ ")"
-                    , languageSplit ++ [ suffix ]
+        allFiles : List Elm.File
+        allFiles =
+            allDictionaries
+                |> Dict.toList
+                |> List.map
+                    (\( splatLanguageName, { languageName, territories } ) ->
+                        let
+                            parentModule : List String
+                            parentModule =
+                                case splatLanguageName of
+                                    [ "Spanish", "Argentina" ] ->
+                                        [ "Spanish" ]
+
+                                    [ "Spanish", _ ] ->
+                                        [ "Spanish", "Argentina" ]
+
+                                    [ "English", "UnitedKingdom" ] ->
+                                        [ "English" ]
+
+                                    [ "English", _ ] ->
+                                        if Dict.get "MF" territories == Just "St. Martin" then
+                                            [ "English" ]
+
+                                        else
+                                            [ "English", "UnitedKingdom" ]
+
+                                    [ "Portuguese", "Portugal" ] ->
+                                        [ "Portuguese" ]
+
+                                    [ "Portuguese", _ ] ->
+                                        [ "Portuguese", "Portugal" ]
+
+                                    _ ->
+                                        splatLanguageName
+                                            |> List.reverse
+                                            |> List.drop 1
+                                            |> List.reverse
+
+                            parent :
+                                { languageName : String
+                                , territories : Dict String String
+                                }
+                            parent =
+                                allDictionaries
+                                    |> Dict.get parentModule
+                                    |> Maybe.withDefault
+                                        { languageName = ""
+                                        , territories = Dict.empty
+                                        }
+                        in
+                        Elm.file ("Cldr" :: splatLanguageName)
+                            [ countryCodeToNameDeclaration
+                                { languageName = parent.languageName
+                                , moduleName = parentModule
+                                , territories = parent.territories
+                                }
+                                languageName
+                                territories
+                            ]
                     )
-                )
-                (standard prefix)
+    in
+    allErrors ++ allFiles
 
-        checkSuffix : String -> Maybe ( String, List String )
-        checkSuffix needle =
-            case String.split "-" needle of
-                [ prefix, "Guru" ] ->
-                    withSuffix "Gurmukhi" prefix
 
-                [ prefix, "Hans" ] ->
-                    withSuffix "Simplified" prefix
+getLanguageName : Shared -> String -> Maybe ( String, List String )
+getLanguageName { languageNames, languagesEnglishDict, territoriesEnglishDict } key =
+    if key == "und" then
+        Nothing
 
-                [ prefix, "Hant" ] ->
-                    withSuffix "Traditional" prefix
+    else
+        let
+            standard : String -> Maybe ( String, List String )
+            standard needle =
+                Dict.get needle languagesEnglishDict
+                    |> Maybe.andThen
+                        (\languageName ->
+                            Maybe.map
+                                (Tuple.pair languageName)
+                                (splitLanguage languageNames languageName)
+                        )
 
-                [ prefix, "Latn" ] ->
-                    withSuffix "Latin" prefix
-
-                [ prefix, "Arab" ] ->
-                    withSuffix "Arabic" prefix
-
-                [ prefix, "tarask" ] ->
-                    withSuffix "Taraškievica" prefix
-
-                [ prefix, "Cyrl" ] ->
-                    withSuffix "Cyrillic" prefix
-
-                [ prefix, "polyton" ] ->
-                    withSuffix "Polytonic" prefix
-
-                _ ->
-                    standard needle
-
-        tryLanguageAndTerritory : String -> String -> Maybe ( String, List String )
-        tryLanguageAndTerritory language territory =
-            Maybe.Extra.orLazy
-                (Maybe.map2
-                    (\( languageName, languageSplit ) territoryName ->
-                        ( languageName ++ " - " ++ territoryName
-                        , languageSplit
-                            ++ [ String.replace " " "" <|
-                                    cleanName territoryName
-                               ]
+            withSuffix : String -> String -> Maybe ( String, List String )
+            withSuffix suffix prefix =
+                Maybe.map
+                    (\( languageName, languageSplit ) ->
+                        ( languageName ++ " (" ++ suffix ++ ")"
+                        , languageSplit ++ [ suffix ]
                         )
                     )
-                    (checkSuffix language)
-                    (Dict.get territory territoriesEnglishDict)
-                )
-                (\_ -> checkSuffix key)
-    in
-    case String.split "-" key of
-        [ "ca", "ES", "valencia" ] ->
-            Just
-                ( "Catalan (Spain, Valencian)"
-                , [ "Catalan", "Valencia" ]
-                )
+                    (standard prefix)
 
-        [ _ ] ->
-            standard key
+            checkSuffix : String -> Maybe ( String, List String )
+            checkSuffix needle =
+                case String.split "-" needle of
+                    [ prefix, "Guru" ] ->
+                        withSuffix "Gurmukhi" prefix
 
-        [ prefix, suffix ] ->
-            tryLanguageAndTerritory prefix suffix
+                    [ prefix, "Hans" ] ->
+                        withSuffix "Simplified" prefix
 
-        [ prefix1, prefix2, suffix ] ->
-            tryLanguageAndTerritory (prefix1 ++ "-" ++ prefix2) suffix
+                    [ prefix, "Hant" ] ->
+                        withSuffix "Traditional" prefix
 
-        _ ->
-            Nothing
+                    [ prefix, "Latn" ] ->
+                        withSuffix "Latin" prefix
+
+                    [ prefix, "Arab" ] ->
+                        withSuffix "Arabic" prefix
+
+                    [ prefix, "tarask" ] ->
+                        withSuffix "Taraškievica" prefix
+
+                    [ prefix, "Cyrl" ] ->
+                        withSuffix "Cyrillic" prefix
+
+                    [ prefix, "polyton" ] ->
+                        withSuffix "Polytonic" prefix
+
+                    _ ->
+                        standard needle
+
+            tryLanguageAndTerritory : String -> String -> Maybe ( String, List String )
+            tryLanguageAndTerritory language territory =
+                Maybe.Extra.orLazy
+                    (Maybe.map2
+                        (\( languageName, languageSplit ) territoryName ->
+                            ( languageName ++ " - " ++ territoryName
+                            , languageSplit
+                                ++ [ String.replace " " "" <|
+                                        cleanName territoryName
+                                   ]
+                            )
+                        )
+                        (checkSuffix language)
+                        (Dict.get territory territoriesEnglishDict)
+                    )
+                    (\_ -> checkSuffix key)
+        in
+        case String.split "-" key of
+            [ "ca", "ES", "valencia" ] ->
+                Just
+                    ( "Catalan - Valencia"
+                    , [ "Catalan", "Valencia" ]
+                    )
+
+            [ _ ] ->
+                standard key
+
+            [ prefix, suffix ] ->
+                tryLanguageAndTerritory prefix suffix
+
+            [ prefix1, prefix2, suffix ] ->
+                tryLanguageAndTerritory (prefix1 ++ "-" ++ prefix2) suffix
+
+            _ ->
+                Nothing
 
 
 getEnglishData : Directory -> Result String ( Dict String String, Dict String String )
@@ -345,6 +406,10 @@ countryCodeToNameDeclaration :
     -> Elm.Declaration
 countryCodeToNameDeclaration parent languageName territories =
     let
+        countryCodeAnnotation : Annotation
+        countryCodeAnnotation =
+            Annotation.namedWith [ "Cldr" ] "CountryCode" []
+
         parentFunction =
             Elm.value
                 { importFrom = "Cldr" :: parent.moduleName
@@ -411,11 +476,6 @@ countryCodeToNameDeclaration parent languageName territories =
             |> Elm.declaration "countryCodeToName"
             |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\n" ++ table)
             |> Elm.expose
-
-
-countryCodeAnnotation : Annotation
-countryCodeAnnotation =
-    Annotation.namedWith [ "Cldr" ] "CountryCode" []
 
 
 cleanName : String -> String
