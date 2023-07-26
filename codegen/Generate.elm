@@ -70,7 +70,7 @@ mainFile (Directory directory) shared =
                     (\key ->
                         getLanguageName shared key
                             |> Maybe.map
-                                (\( name, moduleName ) ->
+                                (\{ name, moduleName } ->
                                     { key = key
                                     , name = name
                                     , moduleName = moduleName
@@ -179,7 +179,7 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
 
                         else
                             case getLanguageName shared key of
-                                Just ( name, moduleName ) ->
+                                Just { name, moduleName } ->
                                     case getTerritories key directory of
                                         Ok territories ->
                                             ( Dict.insert moduleName
@@ -268,34 +268,38 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
     allErrors ++ allFiles
 
 
-getLanguageName : Shared -> String -> Maybe ( String, List String )
+getLanguageName : Shared -> String -> Maybe { name : String, moduleName : List String }
 getLanguageName { languageNames, languagesEnglishDict, territoriesEnglishDict } key =
     if key == "und" then
         Nothing
 
     else
         let
-            standard : String -> Maybe ( String, List String )
+            standard : String -> Maybe { name : String, moduleName : List String }
             standard needle =
                 Dict.get needle languagesEnglishDict
                     |> Maybe.andThen
-                        (\languageName ->
+                        (\name ->
                             Maybe.map
-                                (Tuple.pair languageName)
-                                (splitLanguage languageNames languageName)
+                                (\moduleName ->
+                                    { name = name
+                                    , moduleName = moduleName
+                                    }
+                                )
+                                (splitLanguage languageNames name)
                         )
 
-            withSuffix : String -> String -> Maybe ( String, List String )
+            withSuffix : String -> String -> Maybe { name : String, moduleName : List String }
             withSuffix suffix prefix =
                 Maybe.map
-                    (\( languageName, languageSplit ) ->
-                        ( languageName ++ " (" ++ suffix ++ ")"
-                        , languageSplit ++ [ suffix ]
-                        )
+                    (\{ name, moduleName } ->
+                        { name = name ++ " (" ++ suffix ++ ")"
+                        , moduleName = moduleName ++ [ suffix ]
+                        }
                     )
                     (standard prefix)
 
-            checkSuffix : String -> Maybe ( String, List String )
+            checkSuffix : String -> Maybe { name : String, moduleName : List String }
             checkSuffix needle =
                 case String.split "-" needle of
                     [ prefix, "Guru" ] ->
@@ -325,17 +329,18 @@ getLanguageName { languageNames, languagesEnglishDict, territoriesEnglishDict } 
                     _ ->
                         standard needle
 
-            tryLanguageAndTerritory : String -> String -> Maybe ( String, List String )
+            tryLanguageAndTerritory : String -> String -> Maybe { name : String, moduleName : List String }
             tryLanguageAndTerritory language territory =
                 Maybe.Extra.orLazy
                     (Maybe.map2
-                        (\( languageName, languageSplit ) territoryName ->
-                            ( languageName ++ " - " ++ territoryName
-                            , languageSplit
-                                ++ [ String.replace " " "" <|
-                                        cleanName territoryName
-                                   ]
-                            )
+                        (\{ name, moduleName } territoryName ->
+                            { name = name ++ " - " ++ territoryName
+                            , moduleName =
+                                moduleName
+                                    ++ [ String.replace " " "" <|
+                                            cleanName territoryName
+                                       ]
+                            }
                         )
                         (checkSuffix language)
                         (Dict.get territory territoriesEnglishDict)
@@ -345,9 +350,9 @@ getLanguageName { languageNames, languagesEnglishDict, territoriesEnglishDict } 
         case String.split "-" key of
             [ "ca", "ES", "valencia" ] ->
                 Just
-                    ( "Catalan - Valencia"
-                    , [ "Catalan", "Valencia" ]
-                    )
+                    { name = "Catalan - Valencia"
+                    , moduleName = [ "Catalan", "Valencia" ]
+                    }
 
             [ _ ] ->
                 standard key
