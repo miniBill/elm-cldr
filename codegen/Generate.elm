@@ -40,7 +40,7 @@ main =
                             }
                     in
                     mainFile directory shared
-                        :: files directory shared
+                        ++ files directory shared
         )
 
 
@@ -51,7 +51,7 @@ type alias Shared =
     }
 
 
-mainFile : Directory -> Shared -> Elm.File
+mainFile : Directory -> Shared -> List Elm.File
 mainFile (Directory directory) shared =
     let
         countryCodeAnnotation : Annotation
@@ -83,7 +83,35 @@ mainFile (Directory directory) shared =
                                 )
                     )
     in
-    Elm.file [ "Cldr" ]
+    [ Elm.file [ "Cldr", "Localized" ]
+        [ (\locale countryCode ->
+            allLocales
+                |> List.map
+                    (\{ variant, moduleName } ->
+                        Elm.Case.branch0 variant
+                            (Elm.apply
+                                (Elm.value
+                                    { importFrom = "Cldr" :: moduleName
+                                    , name = "countryCodeToName"
+                                    , annotation =
+                                        Just <|
+                                            Annotation.function
+                                                [ Annotation.named [ "Cldr" ] "CountryCode" ]
+                                                Annotation.string
+                                    }
+                                )
+                                [ countryCode ]
+                            )
+                    )
+                |> Elm.Case.custom locale (Annotation.named [ "Cldr" ] "Locale")
+          )
+            |> Elm.fn2
+                ( "locale", Just <| Annotation.named [ "Cldr" ] "Locale" )
+                ( "countryCode", Just <| Annotation.named [ "Cldr" ] "CountryCode" )
+            |> Elm.declaration "countryCodeToName"
+            |> Elm.expose
+        ]
+    , Elm.file [ "Cldr" ]
         [ allCountryCodes
             |> List.map Elm.variant
             |> Elm.customType "CountryCode"
@@ -94,6 +122,12 @@ mainFile (Directory directory) shared =
             |> Elm.customType "Locale"
             |> Elm.withDocumentation "All the supported locales."
             |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
+        , allLocales
+            |> List.map (\{ variant } -> Elm.withType localeAnnotation <| Elm.val variant)
+            |> Elm.list
+            |> Elm.declaration "allLocales"
+            |> Elm.withDocumentation "All the supported locales."
+            |> Elm.expose
         , (\locale ->
             allLocales
                 |> List.map (\{ variant, name } -> Elm.Case.branch0 variant (Elm.string name))
@@ -102,7 +136,7 @@ mainFile (Directory directory) shared =
             |> Elm.fn ( "locale", Just localeAnnotation )
             |> Elm.declaration "localeToName"
             |> Elm.withDocumentation "Get the name of a locale."
-            |> Elm.exposeWith { exposeConstructor = False, group = Nothing }
+            |> Elm.expose
         , (\countryCodeExpr ->
             allCountryCodes
                 |> List.map
@@ -128,6 +162,7 @@ mainFile (Directory directory) shared =
             |> Elm.withDocumentation "All `CountryCode`s sorted alphabetically."
             |> Elm.expose
         ]
+    ]
 
 
 files : Directory -> Shared -> List Elm.File
@@ -144,11 +179,11 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
 
                         else
                             case getLanguageName shared key of
-                                Just ( languageName, splatLanguageName ) ->
+                                Just ( name, moduleName ) ->
                                     case getTerritories key directory of
                                         Ok territories ->
-                                            ( Dict.insert splatLanguageName
-                                                { languageName = languageName
+                                            ( Dict.insert moduleName
+                                                { name = name
                                                 , territories = territories
                                                 }
                                                 dictAcc
@@ -156,7 +191,7 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                                             )
 
                                         Err e ->
-                                            ( dictAcc, error languageName e :: errAcc )
+                                            ( dictAcc, error name e :: errAcc )
 
                                 Nothing ->
                                     ( dictAcc
@@ -174,11 +209,11 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
             allDictionaries
                 |> Dict.toList
                 |> List.map
-                    (\( splatLanguageName, { languageName, territories } ) ->
+                    (\( moduleName, { name, territories } ) ->
                         let
                             parentModule : List String
                             parentModule =
-                                case splatLanguageName of
+                                case moduleName of
                                     [ "Spanish", "Argentina" ] ->
                                         [ "Spanish" ]
 
@@ -202,30 +237,30 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                                         [ "Portuguese", "Portugal" ]
 
                                     _ ->
-                                        splatLanguageName
+                                        moduleName
                                             |> List.reverse
                                             |> List.drop 1
                                             |> List.reverse
 
                             parent :
-                                { languageName : String
+                                { name : String
                                 , territories : Dict String String
                                 }
                             parent =
                                 allDictionaries
                                     |> Dict.get parentModule
                                     |> Maybe.withDefault
-                                        { languageName = ""
+                                        { name = ""
                                         , territories = Dict.empty
                                         }
                         in
-                        Elm.file ("Cldr" :: splatLanguageName)
+                        Elm.file ("Cldr" :: moduleName)
                             [ countryCodeToNameDeclaration
-                                { languageName = parent.languageName
+                                { name = parent.name
                                 , moduleName = parentModule
                                 , territories = parent.territories
                                 }
-                                languageName
+                                name
                                 territories
                             ]
                     )
@@ -397,7 +432,7 @@ toUpper input =
 
 
 countryCodeToNameDeclaration :
-    { languageName : String
+    { name : String
     , moduleName : List String
     , territories : Dict String String
     }
@@ -456,7 +491,7 @@ countryCodeToNameDeclaration parent languageName territories =
     if List.isEmpty branches then
         parentFunction
             |> Elm.declaration "countryCodeToName"
-            |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.languageName ++ " version.\n\n" ++ table)
+            |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.name ++ " version.\n\n" ++ table)
             |> Elm.expose
 
     else
