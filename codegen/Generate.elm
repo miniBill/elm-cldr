@@ -48,6 +48,7 @@ type alias Shared =
     { languageNames : Set String
     , languagesEnglishDict : Dict String String
     , territoriesEnglishDict : Dict String String
+    , allLocalNames : Dict String String
     }
 
 
@@ -134,8 +135,17 @@ mainFile (Directory directory) shared =
                 |> Elm.Case.custom locale localeAnnotation
           )
             |> Elm.fn ( "locale", Just localeAnnotation )
+            |> Elm.declaration "localeToEnglishName"
+            |> Elm.withDocumentation "Get the english name of a locale."
+            |> Elm.expose
+        , (\locale ->
+            allLocales
+                |> List.map (\{ variant, localName } -> Elm.Case.branch0 variant (Elm.string localName))
+                |> Elm.Case.custom locale localeAnnotation
+          )
+            |> Elm.fn ( "locale", Just localeAnnotation )
             |> Elm.declaration "localeToName"
-            |> Elm.withDocumentation "Get the name of a locale."
+            |> Elm.withDocumentation "Get the local name of a locale."
             |> Elm.expose
         , (\countryCodeExpr ->
             allCountryCodes
@@ -418,8 +428,8 @@ allCountryCodes : List String
 allCountryCodes =
     Iso3166.all
         |> List.map (Iso3166.toAlpha2 >> toUpper)
-        |> (::) "XK"
         -- Kosovo
+        |> (::) "XK"
         |> List.sort
 
 
