@@ -348,27 +348,9 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
                                 (\( languageName, splitLanguageName ) scriptName regionName variantName ->
                                     { name =
                                         languageName
-                                            ++ (case scriptName of
-                                                    Nothing ->
-                                                        ""
-
-                                                    Just sn ->
-                                                        " (" ++ sn ++ ")"
-                                               )
-                                            ++ (case regionName of
-                                                    Nothing ->
-                                                        ""
-
-                                                    Just rn ->
-                                                        " - " ++ rn
-                                               )
-                                            ++ (case variantName of
-                                                    Nothing ->
-                                                        ""
-
-                                                    Just vn ->
-                                                        " (" ++ vn ++ ")"
-                                               )
+                                            ++ wrapString " (" scriptName ")"
+                                            ++ wrapString " - " regionName ""
+                                            ++ wrapString " (" variantName ")"
                                     , moduleName =
                                         (List.map Just splitLanguageName
                                             ++ [ scriptName
@@ -479,6 +461,15 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
 
                     _ ->
                         Err <| "Unsupported! variants = " ++ String.join ", " variants
+
+            wrapString : String -> Maybe String -> String -> String
+            wrapString before value after =
+                case value of
+                    Nothing ->
+                        ""
+
+                    Just w ->
+                        before ++ w ++ after
         in
         Result.toMaybe parsed
 
