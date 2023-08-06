@@ -8,6 +8,7 @@ import Elm.Annotation as Annotation exposing (Annotation)
 import Elm.Case
 import Elm.Case.Branch
 import Gen.CodeGen.Generate as Generate exposing (Directory(..))
+import Gen.Maybe
 import Iso3166
 import Json.Decode
 import Json.Encode
@@ -128,6 +129,35 @@ mainFile (Directory directory) shared =
             |> Elm.declaration "allLocales"
             |> Elm.withDocumentation "All the supported locales."
             |> Elm.expose
+        , (\localeExpr ->
+            Elm.Case.string localeExpr
+                { cases =
+                    allLocales
+                        |> List.map
+                            (\{ key, variant } ->
+                                ( key
+                                , Elm.val variant |> Gen.Maybe.make_.just
+                                )
+                            )
+                , otherwise = Gen.Maybe.make_.nothing
+                }
+                |> Elm.withType (Annotation.maybe localeAnnotation)
+          )
+            |> Elm.fn ( "locale", Just Annotation.string )
+            |> Elm.declaration "localeFromAlpha2"
+            |> Elm.expose
+        , (\localeExpr ->
+            allLocales
+                |> List.map
+                    (\{ key, variant } ->
+                        Elm.Case.branch0 variant
+                            (Elm.string key)
+                    )
+                |> Elm.Case.custom localeExpr localeAnnotation
+          )
+            |> Elm.fn ( "locale", Just localeAnnotation )
+            |> Elm.declaration "localeToAlpha2"
+            |> Elm.expose
         , (\locale ->
             allLocales
                 |> List.map (\{ variant, name } -> Elm.Case.branch0 variant (Elm.string name))
@@ -150,9 +180,28 @@ mainFile (Directory directory) shared =
                     )
                 |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
           )
-            |> Elm.fn ( "countryCodeExpr", Just countryCodeAnnotation )
+            |> Elm.fn ( "countryCode", Just countryCodeAnnotation )
             |> Elm.declaration "toAlpha2"
             |> Elm.withDocumentation "Two-letter `ISO 3166-1 alpha-2` code from `CountryCode`."
+            |> Elm.expose
+        , (\countryCodeExpr ->
+            Elm.Case.string countryCodeExpr
+                { cases =
+                    allCountryCodes
+                        |> List.map
+                            (\countryCode ->
+                                ( countryCode
+                                , Elm.val countryCode
+                                    |> Gen.Maybe.make_.just
+                                )
+                            )
+                , otherwise = Gen.Maybe.make_.nothing
+                }
+                |> Elm.withType (Annotation.maybe countryCodeAnnotation)
+          )
+            |> Elm.fn ( "countryCode", Just Annotation.string )
+            |> Elm.declaration "fromAlpha2"
+            |> Elm.withDocumentation "`CountryCode` from two-letter `ISO 3166-1 alpha-2`."
             |> Elm.expose
         , allCountryCodes
             |> List.map (\countryCode -> Elm.val countryCode)
