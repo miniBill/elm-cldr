@@ -12,7 +12,7 @@ import Gen.Maybe
 import Iso3166
 import Json.Decode
 import Json.Encode
-import Maybe.Extra
+import LanguageTag.Parser
 import Set exposing (Set)
 import String.Extra
 
@@ -69,7 +69,7 @@ mainFile (Directory directory) shared =
                 |> Dict.keys
                 |> List.filterMap
                     (\key ->
-                        getLanguageName shared key
+                        parseLanguageTag shared key
                             |> Maybe.map
                                 (\{ name, moduleName } ->
                                     { key = key
@@ -227,7 +227,7 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                             ( dictAcc, errAcc )
 
                         else
-                            case getLanguageName shared key of
+                            case parseLanguageTag shared key of
                                 Just { name, moduleName } ->
                                     case getTerritories key directory of
                                         Ok territories ->
@@ -317,103 +317,170 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
     allErrors ++ allFiles
 
 
-getLanguageName : Shared -> String -> Maybe { name : String, moduleName : List String }
-getLanguageName { languageNames, languagesEnglishDict, territoriesEnglishDict } key =
+parseLanguageTag : Shared -> String -> Maybe { name : String, moduleName : List String }
+parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict } key =
     if key == "und" then
         Nothing
 
     else
         let
-            standard : String -> Maybe { name : String, moduleName : List String }
-            standard needle =
-                Dict.get needle languagesEnglishDict
-                    |> Maybe.andThen
-                        (\name ->
-                            Maybe.map
-                                (\moduleName ->
-                                    { name = name
-                                    , moduleName = moduleName
+            andThenOnJust : (a -> Result String b) -> Maybe a -> Result String (Maybe b)
+            andThenOnJust f v =
+                case v of
+                    Nothing ->
+                        Ok Nothing
+
+                    Just w ->
+                        Result.map Just (f w)
+
+            parsed : Result String { name : String, moduleName : List String }
+            parsed =
+                case LanguageTag.Parser.parse key of
+                    Just (LanguageTag.Parser.Normal { language, script, region, variants, extensions, privateUse }) ->
+                        if not (List.isEmpty extensions) then
+                            Err <| "Unsupported! extension = " ++ String.join ", " extensions
+
+                        else if not (List.isEmpty privateUse) then
+                            Err <| "Unsupported! privateUse = " ++ String.join ", " privateUse
+
+                        else
+                            Result.map4
+                                (\( languageName, splitLanguageName ) scriptName regionName variantName ->
+                                    { name =
+                                        languageName
+                                            ++ (case scriptName of
+                                                    Nothing ->
+                                                        ""
+
+                                                    Just sn ->
+                                                        " (" ++ sn ++ ")"
+                                               )
+                                            ++ (case regionName of
+                                                    Nothing ->
+                                                        ""
+
+                                                    Just rn ->
+                                                        " - " ++ rn
+                                               )
+                                            ++ (case variantName of
+                                                    Nothing ->
+                                                        ""
+
+                                                    Just vn ->
+                                                        " (" ++ vn ++ ")"
+                                               )
+                                    , moduleName =
+                                        (List.map Just splitLanguageName
+                                            ++ [ scriptName
+                                               , regionName
+                                               , variantName
+                                               ]
+                                        )
+                                            |> List.filterMap identity
+                                            |> List.map
+                                                (\name ->
+                                                    name
+                                                        |> cleanName
+                                                        |> String.replace " " ""
+                                                )
                                     }
                                 )
-                                (splitLanguage languageNames name)
-                        )
+                                (languageString language)
+                                (scriptString script)
+                                (regionString region)
+                                (variantsString variants)
 
-            withSuffix : String -> String -> Maybe { name : String, moduleName : List String }
-            withSuffix suffix prefix =
-                Maybe.map
-                    (\{ name, moduleName } ->
-                        { name = name ++ " (" ++ suffix ++ ")"
-                        , moduleName = moduleName ++ [ suffix ]
-                        }
+                    Just (LanguageTag.Parser.PrivateUse _) ->
+                        Err "Branch 'Just (PrivateUse _)' not implemented"
+
+                    Just (LanguageTag.Parser.Grandfathered _) ->
+                        Err "Branch 'Just (Grandfathered _)' not implemented"
+
+                    Nothing ->
+                        Err <| "Could not parse BCP 47 tag: " ++ key
+
+            languageString : String -> Result String ( String, List String )
+            languageString language =
+                case Dict.get language languagesEnglishDict of
+                    Nothing ->
+                        Err <| "Language not found: " ++ language
+
+                    Just languageName ->
+                        case splitLanguage languageNames languageName of
+                            Nothing ->
+                                Err <| "Failed to split language name: " ++ languageName
+
+                            Just splat ->
+                                Ok ( languageName, splat )
+
+            scriptString : Maybe String -> Result String (Maybe String)
+            scriptString script =
+                andThenOnJust
+                    (\s ->
+                        case s of
+                            "Hans" ->
+                                Ok "Simplified"
+
+                            "Hant" ->
+                                Ok "Traditional"
+
+                            "Latn" ->
+                                Ok "Latin"
+
+                            "Cyrl" ->
+                                Ok "Cyrillic"
+
+                            "Arab" ->
+                                Ok "Arabic"
+
+                            "Guru" ->
+                                Ok "Gurmukhi"
+
+                            _ ->
+                                Err <| "Unsupported! script = " ++ s
                     )
-                    (standard prefix)
+                    script
 
-            checkSuffix : String -> Maybe { name : String, moduleName : List String }
-            checkSuffix needle =
-                case String.split "-" needle of
-                    [ prefix, "Guru" ] ->
-                        withSuffix "Gurmukhi" prefix
+            regionString : Maybe String -> Result String (Maybe String)
+            regionString region =
+                andThenOnJust
+                    (\r ->
+                        case r of
+                            "MO" ->
+                                Ok "Macao"
 
-                    [ prefix, "Hans" ] ->
-                        withSuffix "Simplified" prefix
+                            "HK" ->
+                                Ok "Hong Kong"
 
-                    [ prefix, "Hant" ] ->
-                        withSuffix "Traditional" prefix
+                            _ ->
+                                case Dict.get r territoriesEnglishDict of
+                                    Nothing ->
+                                        Err <| "Could not find territory: " ++ r
 
-                    [ prefix, "Latn" ] ->
-                        withSuffix "Latin" prefix
+                                    Just territoryName ->
+                                        Ok territoryName
+                    )
+                    region
 
-                    [ prefix, "Arab" ] ->
-                        withSuffix "Arabic" prefix
+            variantsString : List String -> Result String (Maybe String)
+            variantsString variants =
+                case variants of
+                    [] ->
+                        Ok Nothing
 
-                    [ prefix, "tarask" ] ->
-                        withSuffix "Taraškievica" prefix
+                    [ "polyton" ] ->
+                        Ok (Just "Polytonic")
 
-                    [ prefix, "Cyrl" ] ->
-                        withSuffix "Cyrillic" prefix
+                    [ "valencia" ] ->
+                        Ok (Just "Valencia")
 
-                    [ prefix, "polyton" ] ->
-                        withSuffix "Polytonic" prefix
+                    [ "tarask" ] ->
+                        Ok (Just "Taraškievica")
 
                     _ ->
-                        standard needle
-
-            tryLanguageAndTerritory : String -> String -> Maybe { name : String, moduleName : List String }
-            tryLanguageAndTerritory language territory =
-                Maybe.Extra.orLazy
-                    (Maybe.map2
-                        (\{ name, moduleName } territoryName ->
-                            { name = name ++ " - " ++ territoryName
-                            , moduleName =
-                                moduleName
-                                    ++ [ String.replace " " "" <|
-                                            cleanName territoryName
-                                       ]
-                            }
-                        )
-                        (checkSuffix language)
-                        (Dict.get territory territoriesEnglishDict)
-                    )
-                    (\_ -> checkSuffix key)
+                        Err <| "Unsupported! variants = " ++ String.join ", " variants
         in
-        case String.split "-" key of
-            [ "ca", "ES", "valencia" ] ->
-                Just
-                    { name = "Catalan - Valencia"
-                    , moduleName = [ "Catalan", "Valencia" ]
-                    }
-
-            [ _ ] ->
-                standard key
-
-            [ prefix, suffix ] ->
-                tryLanguageAndTerritory prefix suffix
-
-            [ prefix1, prefix2, suffix ] ->
-                tryLanguageAndTerritory (prefix1 ++ "-" ++ prefix2) suffix
-
-            _ ->
-                Nothing
+        Result.toMaybe parsed
 
 
 getEnglishData : Directory -> Result String ( Dict String String, Dict String String )
