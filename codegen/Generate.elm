@@ -487,7 +487,8 @@ getTerritories key (Directory directory) =
         Just (Directory subdirectory) ->
             case Dict.get "territories.json" subdirectory.files of
                 Just territoriesJson ->
-                    Result.mapError (\e -> "\"territories.json\": decoding failed: " ++ Json.Decode.errorToString e) <| decodeTerritories key territoriesJson
+                    decodeTerritories key territoriesJson
+                        |> Result.mapError (\e -> "\"territories.json\": decoding failed: " ++ Json.Decode.errorToString e)
 
                 Nothing ->
                     Err "Could not find \"territories.json\""
@@ -522,8 +523,36 @@ decodeTerritories key input =
                 , "territories"
                 ]
                 (Json.Decode.dict Json.Decode.string)
+
+        replaceWithVariant : String -> Dict String String -> Dict String String
+        replaceWithVariant k =
+            replace k (k ++ "-alt-variant")
+
+        replaceWithShort : String -> Dict String String -> Dict String String
+        replaceWithShort k =
+            replace k (k ++ "-alt-short")
+
+        replace : String -> String -> Dict String String -> Dict String String
+        replace to from dict =
+            case Dict.get from dict of
+                Nothing ->
+                    dict
+
+                Just v ->
+                    Dict.insert to v dict
     in
     Json.Decode.decodeString decoder input
+        |> Result.map
+            (\dict ->
+                dict
+                    |> replaceWithVariant "CD"
+                    |> replaceWithVariant "CG"
+                    |> replaceWithVariant "CZ"
+                    |> replaceWithShort "HK"
+                    |> replaceWithShort "MO"
+                    |> replaceWithShort "PS"
+                    |> replaceWithVariant "TL"
+            )
 
 
 allCountryCodes : List String
