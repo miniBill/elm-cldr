@@ -40,7 +40,7 @@ main =
                             , territoriesEnglishDict = territoriesEnglishDict
                             }
                     in
-                    mainFile directory shared
+                    commonFiles directory shared
                         ++ files directory shared
         )
 
@@ -52,18 +52,10 @@ type alias Shared =
     }
 
 
-mainFile : Directory -> Shared -> List Elm.File
-mainFile (Directory directory) shared =
+commonFiles : Directory -> Shared -> List Elm.File
+commonFiles (Directory directory) shared =
     let
-        countryCodeAnnotation : Annotation
-        countryCodeAnnotation =
-            Annotation.named [] "CountryCode"
-
-        localeAnnotation : Annotation
-        localeAnnotation =
-            Annotation.named [] "Locale"
-
-        allLocales : List { key : String, name : String, moduleName : List String, variant : String }
+        allLocales : List { key : String, name : String, moduleName : List String }
         allLocales =
             directory.directories
                 |> Dict.keys
@@ -75,95 +67,53 @@ mainFile (Directory directory) shared =
                                     { key = key
                                     , name = name
                                     , moduleName = moduleName
-                                    , variant =
-                                        key
-                                            |> String.split "-"
-                                            |> List.map String.Extra.toSentenceCase
-                                            |> String.concat
                                     }
                                 )
                     )
     in
-    [ Elm.file [ "Cldr", "Localized" ]
-        [ (\locale countryCode ->
-            allLocales
-                |> List.map
-                    (\{ variant, moduleName } ->
-                        Elm.Case.branch0 variant
-                            (Elm.apply
-                                (Elm.value
-                                    { importFrom = "Cldr" :: moduleName
-                                    , name = "countryCodeToName"
-                                    , annotation =
-                                        Just <|
-                                            Annotation.function
-                                                [ Annotation.named [ "Cldr" ] "CountryCode" ]
-                                                Annotation.string
-                                    }
-                                )
-                                [ countryCode ]
-                            )
-                    )
-                |> Elm.Case.custom locale (Annotation.named [ "Cldr" ] "Locale")
-          )
-            |> Elm.fn2
-                ( "locale", Just <| Annotation.named [ "Cldr" ] "Locale" )
-                ( "countryCode", Just <| Annotation.named [ "Cldr" ] "CountryCode" )
-            |> Elm.declaration "countryCodeToName"
-            |> Elm.expose
-        ]
-    , Elm.file [ "Cldr" ]
+    [ localizedFile allLocales
+    , mainFile allLocales
+    ]
+
+
+mainFile : List { key : String, name : String, moduleName : List String } -> Elm.File
+mainFile allLocales =
+    let
+        countryCodeAnnotation : Annotation
+        countryCodeAnnotation =
+            Annotation.named [] "CountryCode"
+    in
+    Elm.file [ "Cldr" ]
         [ allCountryCodes
             |> List.map Elm.variant
             |> Elm.customType "CountryCode"
             |> Elm.withDocumentation "All the supported country codes. `GT` and `LT` are defined in Basics so we define them as `GT_` and `LT_`."
             |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
         , allLocales
-            |> List.map (\{ variant } -> Elm.variant variant)
-            |> Elm.customType "Locale"
-            |> Elm.withDocumentation "All the supported locales."
-            |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
-        , allLocales
-            |> List.map (\{ variant } -> Elm.withType localeAnnotation <| Elm.val variant)
+            |> List.map (\{ key } -> Elm.string key)
             |> Elm.list
             |> Elm.declaration "allLocales"
             |> Elm.withDocumentation "All the supported locales."
             |> Elm.expose
-        , (\localeExpr ->
-            Elm.Case.string localeExpr
+        , (\locale ->
+            Elm.Case.string locale
                 { cases =
                     allLocales
                         |> List.map
-                            (\{ key, variant } ->
+                            (\{ key, name } ->
                                 ( key
-                                , Elm.val variant |> Gen.Maybe.make_.just
+                                , Gen.Maybe.make_.just <| Elm.string name
                                 )
                             )
                 , otherwise = Gen.Maybe.make_.nothing
                 }
-                |> Elm.withType (Annotation.maybe localeAnnotation)
           )
             |> Elm.fn ( "locale", Just Annotation.string )
-            |> Elm.declaration "localeFromAlpha2"
-            |> Elm.expose
-        , (\localeExpr ->
-            allLocales
-                |> List.map
-                    (\{ key, variant } ->
-                        Elm.Case.branch0 variant
-                            (Elm.string key)
-                    )
-                |> Elm.Case.custom localeExpr localeAnnotation
-          )
-            |> Elm.fn ( "locale", Just localeAnnotation )
-            |> Elm.declaration "localeToAlpha2"
-            |> Elm.expose
-        , (\locale ->
-            allLocales
-                |> List.map (\{ variant, name } -> Elm.Case.branch0 variant (Elm.string name))
-                |> Elm.Case.custom locale localeAnnotation
-          )
-            |> Elm.fn ( "locale", Just localeAnnotation )
+            |> Elm.withType
+                (Annotation.function
+                    [ Annotation.string ]
+                    (Annotation.maybe Annotation.string)
+                )
             |> Elm.declaration "localeToEnglishName"
             |> Elm.withDocumentation "Get the english name of a locale."
             |> Elm.expose
@@ -211,7 +161,52 @@ mainFile (Directory directory) shared =
             |> Elm.withDocumentation "All `CountryCode`s sorted alphabetically."
             |> Elm.expose
         ]
-    ]
+
+
+localizedFile : List { key : String, name : String, moduleName : List String } -> Elm.File
+localizedFile allLocales =
+    let
+        countryCodeAnnotation : Annotation
+        countryCodeAnnotation =
+            Annotation.named [ "Cldr" ] "CountryCode"
+    in
+    Elm.file [ "Cldr", "Localized" ]
+        [ (\locale countryCode ->
+            Elm.Case.string locale
+                { cases =
+                    allLocales
+                        |> List.map
+                            (\{ key, moduleName } ->
+                                ( key
+                                , Elm.apply
+                                    (Elm.value
+                                        { importFrom = "Cldr" :: moduleName
+                                        , name = "countryCodeToName"
+                                        , annotation =
+                                            Just <|
+                                                Annotation.function
+                                                    [ countryCodeAnnotation ]
+                                                    Annotation.string
+                                        }
+                                    )
+                                    [ countryCode ]
+                                    |> Gen.Maybe.make_.just
+                                )
+                            )
+                , otherwise = Gen.Maybe.make_.nothing
+                }
+          )
+            |> Elm.fn2
+                ( "locale", Just Annotation.string )
+                ( "countryCode", Just countryCodeAnnotation )
+            |> Elm.withType
+                (Annotation.function
+                    [ Annotation.string, countryCodeAnnotation ]
+                    (Annotation.maybe Annotation.string)
+                )
+            |> Elm.declaration "countryCodeToName"
+            |> Elm.expose
+        ]
 
 
 files : Directory -> Shared -> List Elm.File
@@ -586,6 +581,7 @@ countryCodeToNameDeclaration parent languageName territories =
         countryCodeAnnotation =
             Annotation.namedWith [ "Cldr" ] "CountryCode" []
 
+        parentFunction : Elm.Expression
         parentFunction =
             Elm.value
                 { importFrom = "Cldr" :: parent.moduleName
