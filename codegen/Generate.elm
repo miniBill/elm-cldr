@@ -299,6 +299,12 @@ localizedCountryCodeToNameDeclaration allLocales =
         countryCodeAnnotation =
             Annotation.named [ "Cldr" ] "CountryCode"
 
+        functionAnnotation : Annotation
+        functionAnnotation =
+            Annotation.function
+                [ countryCodeAnnotation ]
+                Annotation.string
+
         implementation : Elm.Expression -> Elm.Expression -> Elm.Expression
         implementation locale countryCode =
             caseOnLocale allLocales
@@ -309,11 +315,7 @@ localizedCountryCodeToNameDeclaration allLocales =
                             (Elm.value
                                 { importFrom = "Cldr" :: moduleName
                                 , name = "countryCodeToName"
-                                , annotation =
-                                    Just <|
-                                        Annotation.function
-                                            [ countryCodeAnnotation ]
-                                            Annotation.string
+                                , annotation = Just functionAnnotation
                                 }
                             )
                             [ countryCode ]
@@ -340,38 +342,7 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
         ( allDictionaries, allErrors ) =
             dir.directories
                 |> Dict.keys
-                |> List.foldl
-                    (\key ( dictAcc, errAcc ) ->
-                        if key == "und" then
-                            -- Unknown language
-                            ( dictAcc, errAcc )
-
-                        else
-                            case parseLanguageTag shared key of
-                                Just { fullName, moduleName } ->
-                                    case getTerritories key directory of
-                                        Ok territories ->
-                                            ( Dict.insert moduleName
-                                                { fullName = fullName
-                                                , territories = territories
-                                                }
-                                                dictAcc
-                                            , errAcc
-                                            )
-
-                                        Err e ->
-                                            ( dictAcc, error fullName e :: errAcc )
-
-                                Nothing ->
-                                    ( dictAcc
-                                    , error key
-                                        ("Failed to get language name, or split it, language name is "
-                                            ++ Maybe.withDefault "Nothing" (Dict.get key languagesEnglishDict)
-                                        )
-                                        :: errAcc
-                                    )
-                    )
-                    ( Dict.empty, [] )
+                |> List.foldl tryAddDictionary ( Dict.empty, [] )
 
         allFiles : List Elm.File
         allFiles =
@@ -406,6 +377,50 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                                 territories
                             ]
                     )
+
+        tryAddDictionary :
+            String
+            ->
+                ( Dict (List String) { fullName : String, territories : Dict String String }
+                , List Elm.File
+                )
+            ->
+                ( Dict (List String) { fullName : String, territories : Dict String String }
+                , List Elm.File
+                )
+        tryAddDictionary key ( dictAcc, errAcc ) =
+            case parseLanguageTag shared key of
+                Just { fullName, moduleName } ->
+                    case getTerritories key directory of
+                        Ok territories ->
+                            ( Dict.insert moduleName
+                                { fullName = fullName
+                                , territories = territories
+                                }
+                                dictAcc
+                            , errAcc
+                            )
+
+                        Err e ->
+                            ( dictAcc, error fullName e :: errAcc )
+
+                Nothing ->
+                    if key == "und" then
+                        -- Unknown language
+                        ( dictAcc, errAcc )
+
+                    else
+                        let
+                            name : String
+                            name =
+                                Dict.get key languagesEnglishDict
+                                    |> Maybe.withDefault "Nothing"
+                        in
+                        ( dictAcc
+                        , error key
+                            ("Failed to parse language tag, language name is " ++ name)
+                            :: errAcc
+                        )
     in
     allErrors ++ allFiles
 
@@ -595,20 +610,12 @@ variantsToString variants =
 
 regionToString : Dict String String -> String -> Result String String
 regionToString territoriesEnglishDict region =
-    case region of
-        "MO" ->
-            Ok "Macao"
+    case Dict.get region territoriesEnglishDict of
+        Nothing ->
+            Err <| "Could not find territory: " ++ region
 
-        "HK" ->
-            Ok "Hong Kong"
-
-        _ ->
-            case Dict.get region territoriesEnglishDict of
-                Nothing ->
-                    Err <| "Could not find territory: " ++ region
-
-                Just territoryName ->
-                    Ok territoryName
+        Just territoryName ->
+            Ok territoryName
 
 
 scriptToString : String -> Result String String
