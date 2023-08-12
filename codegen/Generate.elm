@@ -9,6 +9,7 @@ import Elm.Case
 import Elm.Case.Branch
 import Gen.CodeGen.Generate as Generate exposing (Directory(..))
 import Gen.Maybe
+import Gen.String
 import Iso3166
 import Json.Decode
 import Json.Encode
@@ -52,10 +53,17 @@ type alias Shared =
     }
 
 
+type alias Locale =
+    { key : String
+    , name : String
+    , moduleName : List String
+    }
+
+
 commonFiles : Directory -> Shared -> List Elm.File
 commonFiles (Directory directory) shared =
     let
-        allLocales : List { key : String, name : String, moduleName : List String }
+        allLocales : List Locale
         allLocales =
             directory.directories
                 |> Dict.keys
@@ -76,65 +84,62 @@ commonFiles (Directory directory) shared =
     ]
 
 
-mainFile : List { key : String, name : String, moduleName : List String } -> Elm.File
+mainFile : List Locale -> Elm.File
 mainFile allLocales =
+    Elm.file [ "Cldr" ]
+        [ countryCodeTypeDeclaration
+        , allLocalesDeclaration allLocales
+        , localeToEnglishNameDeclaration allLocales
+        , toAlpha2Declaration
+        , fromAlpha2Declaration
+        , allCountryCodesDeclaration
+        ]
+
+
+countryCodeTypeDeclaration : Elm.Declaration
+countryCodeTypeDeclaration =
+    allCountryCodes
+        |> List.map Elm.variant
+        |> Elm.customType "CountryCode"
+        |> Elm.withDocumentation "All the supported country codes. `GT` and `LT` are defined in Basics so we define them as `GT_` and `LT_`."
+        |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
+
+
+allCountryCodesDeclaration : Elm.Declaration
+allCountryCodesDeclaration =
     let
         countryCodeAnnotation : Annotation
         countryCodeAnnotation =
             Annotation.named [] "CountryCode"
     in
-    Elm.file [ "Cldr" ]
-        [ allCountryCodes
-            |> List.map Elm.variant
-            |> Elm.customType "CountryCode"
-            |> Elm.withDocumentation "All the supported country codes. `GT` and `LT` are defined in Basics so we define them as `GT_` and `LT_`."
-            |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
-        , allLocales
-            |> List.map (\{ key } -> Elm.string key)
-            |> Elm.list
-            |> Elm.declaration "allLocales"
-            |> Elm.withDocumentation "All the supported locales."
-            |> Elm.expose
-        , (\locale ->
-            Elm.Case.string locale
-                { cases =
-                    allLocales
-                        |> List.map
-                            (\{ key, name } ->
-                                ( key
-                                , Gen.Maybe.make_.just <| Elm.string name
-                                )
-                            )
-                , otherwise = Gen.Maybe.make_.nothing
-                }
-          )
-            |> Elm.fn ( "locale", Just Annotation.string )
-            |> Elm.withType
-                (Annotation.function
-                    [ Annotation.string ]
-                    (Annotation.maybe Annotation.string)
-                )
-            |> Elm.declaration "localeToEnglishName"
-            |> Elm.withDocumentation "Get the english name of a locale."
-            |> Elm.expose
-        , (\countryCodeExpr ->
-            allCountryCodes
-                |> List.map
-                    (\countryCode ->
-                        Elm.Case.branch0 countryCode
-                            (countryCode
-                                |> String.toLower
-                                |> String.replace "_" ""
-                                |> Elm.string
-                            )
-                    )
-                |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
-          )
-            |> Elm.fn ( "countryCode", Just countryCodeAnnotation )
-            |> Elm.declaration "toAlpha2"
-            |> Elm.withDocumentation "Two-letter `ISO 3166-1 alpha-2` code from `CountryCode`."
-            |> Elm.expose
-        , (\countryCodeExpr ->
+    allCountryCodes
+        |> List.map Elm.val
+        |> Elm.list
+        |> Elm.withType (Annotation.list countryCodeAnnotation)
+        |> Elm.declaration "allCountryCodes"
+        |> Elm.withDocumentation "All `CountryCode`s sorted alphabetically."
+        |> Elm.expose
+
+
+allLocalesDeclaration : List Locale -> Elm.Declaration
+allLocalesDeclaration allLocales =
+    allLocales
+        |> List.map (\{ key } -> Elm.string key)
+        |> Elm.list
+        |> Elm.declaration "allLocales"
+        |> Elm.withDocumentation "All the supported locales."
+        |> Elm.expose
+
+
+fromAlpha2Declaration : Elm.Declaration
+fromAlpha2Declaration =
+    let
+        countryCodeAnnotation : Annotation
+        countryCodeAnnotation =
+            Annotation.named [] "CountryCode"
+
+        implementation : Elm.Expression -> Elm.Expression
+        implementation countryCodeExpr =
             Elm.Case.string countryCodeExpr
                 { cases =
                     allCountryCodes
@@ -148,65 +153,165 @@ mainFile allLocales =
                 , otherwise = Gen.Maybe.make_.nothing
                 }
                 |> Elm.withType (Annotation.maybe countryCodeAnnotation)
-          )
-            |> Elm.fn ( "countryCode", Just Annotation.string )
-            |> Elm.declaration "fromAlpha2"
-            |> Elm.withDocumentation "`CountryCode` from two-letter `ISO 3166-1 alpha-2`."
-            |> Elm.expose
-        , allCountryCodes
-            |> List.map (\countryCode -> Elm.val countryCode)
-            |> Elm.list
-            |> Elm.withType (Annotation.list countryCodeAnnotation)
-            |> Elm.declaration "all"
-            |> Elm.withDocumentation "All `CountryCode`s sorted alphabetically."
-            |> Elm.expose
+    in
+    implementation
+        |> Elm.fn ( "countryCode", Just Annotation.string )
+        |> Elm.declaration "fromAlpha2"
+        |> Elm.withDocumentation "`CountryCode` from two-letter `ISO 3166-1 alpha-2`."
+        |> Elm.expose
+
+
+toAlpha2Declaration : Elm.Declaration
+toAlpha2Declaration =
+    let
+        countryCodeAnnotation : Annotation
+        countryCodeAnnotation =
+            Annotation.named [] "CountryCode"
+
+        implementation : Elm.Expression -> Elm.Expression
+        implementation countryCodeExpr =
+            allCountryCodes
+                |> List.map
+                    (\countryCode ->
+                        Elm.Case.branch0 countryCode
+                            (countryCode
+                                |> String.toLower
+                                |> String.replace "_" ""
+                                |> Elm.string
+                            )
+                    )
+                |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
+    in
+    implementation
+        |> Elm.fn ( "countryCode", Just countryCodeAnnotation )
+        |> Elm.declaration "toAlpha2"
+        |> Elm.withDocumentation "Two-letter `ISO 3166-1 alpha-2` code from `CountryCode`."
+        |> Elm.expose
+
+
+localeToEnglishNameDeclaration : List Locale -> Elm.Declaration
+localeToEnglishNameDeclaration allLocales =
+    let
+        implementation : Elm.Expression -> Elm.Expression
+        implementation locale =
+            allLocales
+                |> List.map
+                    (\{ key, name } ->
+                        let
+                            splat : List String
+                            splat =
+                                String.split "-" key
+                        in
+                        ( splat, name )
+                    )
+                |> List.sortWith
+                    (\( l, _ ) ( r, _ ) -> sortSplitLocale l r)
+                |> List.map
+                    (\( splat, name ) ->
+                        Elm.Case.Branch.listWithRemaining
+                            { patterns = List.map (\s -> Elm.Case.Branch.string s ()) splat
+                            , gather = \i _ -> i
+                            , startWith = ()
+                            , finally = \_ _ -> Gen.Maybe.make_.just <| Elm.string name
+                            , remaining = Elm.Case.Branch.ignore ()
+                            }
+                    )
+                |> (\cases ->
+                        cases ++ [ Elm.Case.Branch.ignore <| Gen.Maybe.make_.nothing ]
+                   )
+                |> Elm.Case.custom
+                    (Gen.String.call_.split (Elm.string "-") locale)
+                    (Annotation.list Annotation.string)
+    in
+    implementation
+        |> Elm.fn ( "locale", Just Annotation.string )
+        |> Elm.withType
+            (Annotation.function
+                [ Annotation.string ]
+                (Annotation.maybe Annotation.string)
+            )
+        |> Elm.declaration "localeToEnglishName"
+        |> Elm.withDocumentation "Get the english name of a locale."
+        |> Elm.expose
+
+
+sortSplitLocale : List comparable -> List comparable -> Order
+sortSplitLocale l r =
+    -- We want to sort alphabetically, but have longer lists first so we can match from most specific to least specific
+    case ( l, r ) of
+        ( [], [] ) ->
+            EQ
+
+        ( [], _ :: _ ) ->
+            GT
+
+        ( _ :: _, [] ) ->
+            LT
+
+        ( lh :: lt, rh :: rt ) ->
+            let
+                cmp : Order
+                cmp =
+                    compare lh rh
+            in
+            if cmp == EQ then
+                sortSplitLocale lt rt
+
+            else
+                cmp
+
+
+localizedFile : List Locale -> Elm.File
+localizedFile allLocales =
+    Elm.file [ "Cldr", "Localized" ]
+        [ localizedCountryCodeToNameDeclaration allLocales
         ]
 
 
-localizedFile : List { key : String, name : String, moduleName : List String } -> Elm.File
-localizedFile allLocales =
+localizedCountryCodeToNameDeclaration : List Locale -> Elm.Declaration
+localizedCountryCodeToNameDeclaration allLocales =
     let
         countryCodeAnnotation : Annotation
         countryCodeAnnotation =
             Annotation.named [ "Cldr" ] "CountryCode"
-    in
-    Elm.file [ "Cldr", "Localized" ]
-        [ (\locale countryCode ->
+
+        implementation : Elm.Expression -> Elm.Expression -> Elm.Expression
+        implementation locale countryCode =
             Elm.Case.string locale
                 { cases =
-                    allLocales
-                        |> List.map
-                            (\{ key, moduleName } ->
-                                ( key
-                                , Elm.apply
-                                    (Elm.value
-                                        { importFrom = "Cldr" :: moduleName
-                                        , name = "countryCodeToName"
-                                        , annotation =
-                                            Just <|
-                                                Annotation.function
-                                                    [ countryCodeAnnotation ]
-                                                    Annotation.string
-                                        }
-                                    )
-                                    [ countryCode ]
-                                    |> Gen.Maybe.make_.just
+                    List.map
+                        (\{ key, moduleName } ->
+                            ( key
+                            , Elm.apply
+                                (Elm.value
+                                    { importFrom = "Cldr" :: moduleName
+                                    , name = "countryCodeToName"
+                                    , annotation =
+                                        Just <|
+                                            Annotation.function
+                                                [ countryCodeAnnotation ]
+                                                Annotation.string
+                                    }
                                 )
+                                [ countryCode ]
+                                |> Gen.Maybe.make_.just
                             )
+                        )
+                        allLocales
                 , otherwise = Gen.Maybe.make_.nothing
                 }
-          )
-            |> Elm.fn2
-                ( "locale", Just Annotation.string )
-                ( "countryCode", Just countryCodeAnnotation )
-            |> Elm.withType
-                (Annotation.function
-                    [ Annotation.string, countryCodeAnnotation ]
-                    (Annotation.maybe Annotation.string)
-                )
-            |> Elm.declaration "countryCodeToName"
-            |> Elm.expose
-        ]
+    in
+    implementation
+        |> Elm.fn2
+            ( "locale", Just Annotation.string )
+            ( "countryCode", Just countryCodeAnnotation )
+        |> Elm.withType
+            (Annotation.function
+                [ Annotation.string, countryCodeAnnotation ]
+                (Annotation.maybe Annotation.string)
+            )
+        |> Elm.declaration "countryCodeToName"
+        |> Elm.expose
 
 
 files : Directory -> Shared -> List Elm.File
@@ -257,34 +362,7 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                         let
                             parentModule : List String
                             parentModule =
-                                case moduleName of
-                                    [ "Spanish", "Argentina" ] ->
-                                        [ "Spanish" ]
-
-                                    [ "Spanish", _ ] ->
-                                        [ "Spanish", "Argentina" ]
-
-                                    [ "English", "UnitedKingdom" ] ->
-                                        [ "English" ]
-
-                                    [ "English", _ ] ->
-                                        if Dict.get "MF" territories == Just "St. Martin" then
-                                            [ "English" ]
-
-                                        else
-                                            [ "English", "UnitedKingdom" ]
-
-                                    [ "Portuguese", "Portugal" ] ->
-                                        [ "Portuguese" ]
-
-                                    [ "Portuguese", _ ] ->
-                                        [ "Portuguese", "Portugal" ]
-
-                                    _ ->
-                                        moduleName
-                                            |> List.reverse
-                                            |> List.drop 1
-                                            |> List.reverse
+                                getParentModule territories moduleName
 
                             parent :
                                 { name : String
@@ -312,6 +390,38 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
     allErrors ++ allFiles
 
 
+getParentModule : Dict String String -> List String -> List String
+getParentModule territories moduleName =
+    case moduleName of
+        [ "Spanish", "Argentina" ] ->
+            [ "Spanish" ]
+
+        [ "Spanish", _ ] ->
+            [ "Spanish", "Argentina" ]
+
+        [ "English", "UnitedKingdom" ] ->
+            [ "English" ]
+
+        [ "English", _ ] ->
+            if Dict.get "MF" territories == Just "St. Martin" then
+                [ "English" ]
+
+            else
+                [ "English", "UnitedKingdom" ]
+
+        [ "Portuguese", "Portugal" ] ->
+            [ "Portuguese" ]
+
+        [ "Portuguese", _ ] ->
+            [ "Portuguese", "Portugal" ]
+
+        _ ->
+            moduleName
+                |> List.reverse
+                |> List.drop 1
+                |> List.reverse
+
+
 parseLanguageTag : Shared -> String -> Maybe { name : String, moduleName : List String }
 parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict } key =
     if key == "und" then
@@ -319,8 +429,8 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
 
     else
         let
-            andThenOnJust : (a -> Result String b) -> Maybe a -> Result String (Maybe b)
-            andThenOnJust f v =
+            traverse : (a -> Result String b) -> Maybe a -> Result String (Maybe b)
+            traverse f v =
                 case v of
                     Nothing ->
                         Ok Nothing
@@ -347,25 +457,18 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
                                             ++ wrapString " - " regionName ""
                                             ++ wrapString " (" variantName ")"
                                     , moduleName =
-                                        (List.map Just splitLanguageName
-                                            ++ [ scriptName
-                                               , regionName
-                                               , variantName
-                                               ]
-                                        )
-                                            |> List.filterMap identity
-                                            |> List.map
-                                                (\name ->
-                                                    name
-                                                        |> cleanName
-                                                        |> String.replace " " ""
-                                                )
+                                        toModuleName
+                                            { splitLanguageName = splitLanguageName
+                                            , scriptName = scriptName
+                                            , regionName = regionName
+                                            , variantName = variantName
+                                            }
                                     }
                                 )
                                 (languageString language)
-                                (scriptString script)
-                                (regionString region)
-                                (variantsString variants)
+                                (traverse scriptToString script)
+                                (traverse (regionToString territoriesEnglishDict) region)
+                                (variantsToString variants)
 
                     Just (LanguageTag.Parser.PrivateUse _) ->
                         Err "Branch 'Just (PrivateUse _)' not implemented"
@@ -390,73 +493,6 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
                             Just splat ->
                                 Ok ( languageName, splat )
 
-            scriptString : Maybe String -> Result String (Maybe String)
-            scriptString script =
-                andThenOnJust
-                    (\s ->
-                        case s of
-                            "Hans" ->
-                                Ok "Simplified"
-
-                            "Hant" ->
-                                Ok "Traditional"
-
-                            "Latn" ->
-                                Ok "Latin"
-
-                            "Cyrl" ->
-                                Ok "Cyrillic"
-
-                            "Arab" ->
-                                Ok "Arabic"
-
-                            "Guru" ->
-                                Ok "Gurmukhi"
-
-                            _ ->
-                                Err <| "Unsupported! script = " ++ s
-                    )
-                    script
-
-            regionString : Maybe String -> Result String (Maybe String)
-            regionString region =
-                andThenOnJust
-                    (\r ->
-                        case r of
-                            "MO" ->
-                                Ok "Macao"
-
-                            "HK" ->
-                                Ok "Hong Kong"
-
-                            _ ->
-                                case Dict.get r territoriesEnglishDict of
-                                    Nothing ->
-                                        Err <| "Could not find territory: " ++ r
-
-                                    Just territoryName ->
-                                        Ok territoryName
-                    )
-                    region
-
-            variantsString : List String -> Result String (Maybe String)
-            variantsString variants =
-                case variants of
-                    [] ->
-                        Ok Nothing
-
-                    [ "polyton" ] ->
-                        Ok (Just "Polytonic")
-
-                    [ "valencia" ] ->
-                        Ok (Just "Valencia")
-
-                    [ "tarask" ] ->
-                        Ok (Just "Taraškievica")
-
-                    _ ->
-                        Err <| "Unsupported! variants = " ++ String.join ", " variants
-
             wrapString : String -> Maybe String -> String -> String
             wrapString before value after =
                 case value of
@@ -467,6 +503,91 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
                         before ++ w ++ after
         in
         Result.toMaybe parsed
+
+
+toModuleName :
+    { splitLanguageName : List String
+    , scriptName : Maybe String
+    , regionName : Maybe String
+    , variantName : Maybe String
+    }
+    -> List String
+toModuleName { splitLanguageName, scriptName, regionName, variantName } =
+    (splitLanguageName
+        ++ List.filterMap identity
+            [ scriptName
+            , regionName
+            , variantName
+            ]
+    )
+        |> List.map
+            (\name ->
+                name
+                    |> cleanName
+                    |> String.replace " " ""
+            )
+
+
+variantsToString : List String -> Result String (Maybe String)
+variantsToString variants =
+    case variants of
+        [] ->
+            Ok Nothing
+
+        [ "polyton" ] ->
+            Ok (Just "Polytonic")
+
+        [ "valencia" ] ->
+            Ok (Just "Valencia")
+
+        [ "tarask" ] ->
+            Ok (Just "Taraškievica")
+
+        _ ->
+            Err <| "Unsupported! variants = " ++ String.join ", " variants
+
+
+regionToString : Dict String String -> String -> Result String String
+regionToString territoriesEnglishDict region =
+    case region of
+        "MO" ->
+            Ok "Macao"
+
+        "HK" ->
+            Ok "Hong Kong"
+
+        _ ->
+            case Dict.get region territoriesEnglishDict of
+                Nothing ->
+                    Err <| "Could not find territory: " ++ region
+
+                Just territoryName ->
+                    Ok territoryName
+
+
+scriptToString : String -> Result String String
+scriptToString script =
+    case script of
+        "Hans" ->
+            Ok "Simplified"
+
+        "Hant" ->
+            Ok "Traditional"
+
+        "Latn" ->
+            Ok "Latin"
+
+        "Cyrl" ->
+            Ok "Cyrillic"
+
+        "Arab" ->
+            Ok "Arabic"
+
+        "Guru" ->
+            Ok "Gurmukhi"
+
+        _ ->
+            Err <| "Unsupported! script = " ++ script
 
 
 getEnglishData : Directory -> Result String ( Dict String String, Dict String String )
