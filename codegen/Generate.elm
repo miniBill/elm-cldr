@@ -55,7 +55,13 @@ type alias Shared =
 
 type alias Locale =
     { key : String
-    , name : String
+    , fullName : String
+    , moduleName : List String
+    }
+
+
+type alias Language =
+    { fullName : String
     , moduleName : List String
     }
 
@@ -71,9 +77,9 @@ commonFiles (Directory directory) shared =
                     (\key ->
                         parseLanguageTag shared key
                             |> Maybe.map
-                                (\{ name, moduleName } ->
+                                (\{ fullName, moduleName } ->
                                     { key = key
-                                    , name = name
+                                    , fullName = fullName
                                     , moduleName = moduleName
                                     }
                                 )
@@ -196,13 +202,13 @@ localeToEnglishNameDeclaration allLocales =
         implementation locale =
             allLocales
                 |> List.map
-                    (\{ key, name } ->
+                    (\{ key, fullName } ->
                         let
                             splat : List String
                             splat =
                                 String.split "-" key
                         in
-                        ( splat, name )
+                        ( splat, fullName )
                     )
                 |> List.sortWith
                     (\( l, _ ) ( r, _ ) -> sortSplitLocale l r)
@@ -328,11 +334,11 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
 
                         else
                             case parseLanguageTag shared key of
-                                Just { name, moduleName } ->
+                                Just { fullName, moduleName } ->
                                     case getTerritories key directory of
                                         Ok territories ->
                                             ( Dict.insert moduleName
-                                                { name = name
+                                                { fullName = fullName
                                                 , territories = territories
                                                 }
                                                 dictAcc
@@ -340,7 +346,7 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                                             )
 
                                         Err e ->
-                                            ( dictAcc, error name e :: errAcc )
+                                            ( dictAcc, error fullName e :: errAcc )
 
                                 Nothing ->
                                     ( dictAcc
@@ -358,31 +364,31 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
             allDictionaries
                 |> Dict.toList
                 |> List.map
-                    (\( moduleName, { name, territories } ) ->
+                    (\( moduleName, { fullName, territories } ) ->
                         let
                             parentModule : List String
                             parentModule =
                                 getParentModule territories moduleName
 
                             parent :
-                                { name : String
+                                { fullName : String
                                 , territories : Dict String String
                                 }
                             parent =
                                 allDictionaries
                                     |> Dict.get parentModule
                                     |> Maybe.withDefault
-                                        { name = ""
+                                        { fullName = ""
                                         , territories = Dict.empty
                                         }
                         in
                         Elm.file ("Cldr" :: moduleName)
                             [ countryCodeToNameDeclaration
-                                { name = parent.name
+                                { fullName = parent.fullName
                                 , moduleName = parentModule
                                 , territories = parent.territories
                                 }
-                                name
+                                fullName
                                 territories
                             ]
                     )
@@ -422,7 +428,7 @@ getParentModule territories moduleName =
                 |> List.reverse
 
 
-parseLanguageTag : Shared -> String -> Maybe { name : String, moduleName : List String }
+parseLanguageTag : Shared -> String -> Maybe Language
 parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict } key =
     if key == "und" then
         Nothing
@@ -438,7 +444,7 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
                     Just w ->
                         Result.map Just (f w)
 
-            parsed : Result String { name : String, moduleName : List String }
+            parsed : Result String Language
             parsed =
                 case LanguageTag.Parser.parse key of
                     Just (LanguageTag.Parser.Normal { language, script, region, variants, extensions, privateUse }) ->
@@ -451,19 +457,13 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
                         else
                             Result.map4
                                 (\( languageName, splitLanguageName ) scriptName regionName variantName ->
-                                    { name =
-                                        languageName
-                                            ++ wrapString " (" scriptName ")"
-                                            ++ wrapString " - " regionName ""
-                                            ++ wrapString " (" variantName ")"
-                                    , moduleName =
-                                        toModuleName
-                                            { splitLanguageName = splitLanguageName
-                                            , scriptName = scriptName
-                                            , regionName = regionName
-                                            , variantName = variantName
-                                            }
-                                    }
+                                    createLanguage
+                                        { languageName = languageName
+                                        , splitLanguageName = splitLanguageName
+                                        , scriptName = scriptName
+                                        , regionName = regionName
+                                        , variantName = variantName
+                                        }
                                 )
                                 (languageString language)
                                 (traverse scriptToString script)
@@ -492,24 +492,56 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
 
                             Just splat ->
                                 Ok ( languageName, splat )
-
-            wrapString : String -> Maybe String -> String -> String
-            wrapString before value after =
-                case value of
-                    Nothing ->
-                        ""
-
-                    Just w ->
-                        before ++ w ++ after
         in
         Result.toMaybe parsed
 
 
+createLanguage :
+    { a
+        | languageName : String
+        , splitLanguageName : List String
+        , scriptName : Maybe String
+        , regionName : Maybe String
+        , variantName : Maybe String
+    }
+    -> Language
+createLanguage data =
+    { fullName = fullLanguageName data
+    , moduleName = toModuleName data
+    }
+
+
+fullLanguageName :
+    { a
+        | languageName : String
+        , scriptName : Maybe String
+        , regionName : Maybe String
+        , variantName : Maybe String
+    }
+    -> String
+fullLanguageName { languageName, scriptName, regionName, variantName } =
+    let
+        wrapString : String -> Maybe String -> String -> String
+        wrapString before value after =
+            case value of
+                Nothing ->
+                    ""
+
+                Just w ->
+                    before ++ w ++ after
+    in
+    languageName
+        ++ wrapString " (" scriptName ")"
+        ++ wrapString " - " regionName ""
+        ++ wrapString " (" variantName ")"
+
+
 toModuleName :
-    { splitLanguageName : List String
-    , scriptName : Maybe String
-    , regionName : Maybe String
-    , variantName : Maybe String
+    { a
+        | splitLanguageName : List String
+        , scriptName : Maybe String
+        , regionName : Maybe String
+        , variantName : Maybe String
     }
     -> List String
 toModuleName { splitLanguageName, scriptName, regionName, variantName } =
@@ -689,7 +721,7 @@ toUpper input =
 
 
 countryCodeToNameDeclaration :
-    { name : String
+    { fullName : String
     , moduleName : List String
     , territories : Dict String String
     }
@@ -749,7 +781,7 @@ countryCodeToNameDeclaration parent languageName territories =
     if List.isEmpty branches then
         parentFunction
             |> Elm.declaration "countryCodeToName"
-            |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.name ++ " version.\n\n" ++ table)
+            |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.fullName ++ " version.\n\n" ++ table)
             |> Elm.expose
 
     else
