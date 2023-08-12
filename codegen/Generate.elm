@@ -200,34 +200,11 @@ localeToEnglishNameDeclaration allLocales =
     let
         implementation : Elm.Expression -> Elm.Expression
         implementation locale =
-            allLocales
-                |> List.map
-                    (\{ key, fullName } ->
-                        let
-                            splat : List String
-                            splat =
-                                String.split "-" key
-                        in
-                        ( splat, fullName )
-                    )
-                |> List.sortWith
-                    (\( l, _ ) ( r, _ ) -> sortSplitLocale l r)
-                |> List.map
-                    (\( splat, name ) ->
-                        Elm.Case.Branch.listWithRemaining
-                            { patterns = List.map (\s -> Elm.Case.Branch.string s ()) splat
-                            , gather = \i _ -> i
-                            , startWith = ()
-                            , finally = \_ _ -> Gen.Maybe.make_.just <| Elm.string name
-                            , remaining = Elm.Case.Branch.ignore ()
-                            }
-                    )
-                |> (\cases ->
-                        cases ++ [ Elm.Case.Branch.ignore <| Gen.Maybe.make_.nothing ]
-                   )
-                |> Elm.Case.custom
-                    (Gen.String.call_.split (Elm.string "-") locale)
-                    (Annotation.list Annotation.string)
+            caseOnLocale allLocales
+                locale
+                { case_ = \{ fullName } -> Gen.Maybe.make_.just <| Elm.string fullName
+                , otherwise = Gen.Maybe.make_.nothing
+                }
     in
     implementation
         |> Elm.fn ( "locale", Just Annotation.string )
@@ -239,6 +216,47 @@ localeToEnglishNameDeclaration allLocales =
         |> Elm.declaration "localeToEnglishName"
         |> Elm.withDocumentation "Get the english name of a locale."
         |> Elm.expose
+
+
+{-| Split the input on dashes and pattern match with the longest prefix we know of.
+-}
+caseOnLocale :
+    List Locale
+    -> Elm.Expression
+    ->
+        { case_ : Locale -> Elm.Expression
+        , otherwise : Elm.Expression
+        }
+    -> Elm.Expression
+caseOnLocale allLocales input { case_, otherwise } =
+    allLocales
+        |> List.map
+            (\locale ->
+                let
+                    splat : List String
+                    splat =
+                        String.split "-" locale.key
+                in
+                ( splat, locale )
+            )
+        |> List.sortWith
+            (\( l, _ ) ( r, _ ) -> sortSplitLocale l r)
+        |> List.map
+            (\( splat, locale ) ->
+                Elm.Case.Branch.listWithRemaining
+                    { patterns = List.map (\s -> Elm.Case.Branch.string s ()) splat
+                    , gather = \i _ -> i
+                    , startWith = ()
+                    , finally = \_ _ -> case_ locale
+                    , remaining = Elm.Case.Branch.ignore ()
+                    }
+            )
+        |> (\cases ->
+                cases ++ [ Elm.Case.Branch.ignore otherwise ]
+           )
+        |> Elm.Case.custom
+            (Gen.String.call_.split (Elm.string "-") input)
+            (Annotation.list Annotation.string)
 
 
 sortSplitLocale : List comparable -> List comparable -> Order
@@ -283,27 +301,23 @@ localizedCountryCodeToNameDeclaration allLocales =
 
         implementation : Elm.Expression -> Elm.Expression -> Elm.Expression
         implementation locale countryCode =
-            Elm.Case.string locale
-                { cases =
-                    List.map
-                        (\{ key, moduleName } ->
-                            ( key
-                            , Elm.apply
-                                (Elm.value
-                                    { importFrom = "Cldr" :: moduleName
-                                    , name = "countryCodeToName"
-                                    , annotation =
-                                        Just <|
-                                            Annotation.function
-                                                [ countryCodeAnnotation ]
-                                                Annotation.string
-                                    }
-                                )
-                                [ countryCode ]
-                                |> Gen.Maybe.make_.just
+            caseOnLocale allLocales
+                locale
+                { case_ =
+                    \{ moduleName } ->
+                        Elm.apply
+                            (Elm.value
+                                { importFrom = "Cldr" :: moduleName
+                                , name = "countryCodeToName"
+                                , annotation =
+                                    Just <|
+                                        Annotation.function
+                                            [ countryCodeAnnotation ]
+                                            Annotation.string
+                                }
                             )
-                        )
-                        allLocales
+                            [ countryCode ]
+                            |> Gen.Maybe.make_.just
                 , otherwise = Gen.Maybe.make_.nothing
                 }
     in
