@@ -14,7 +14,7 @@ import Iso3166
 import Json.Decode
 import Json.Encode
 import LanguageTag.Country as Country exposing (Country)
-import LanguageTag.ExtendedLanguage as ExtendedLanguage exposing (ExtendedLanguage)
+import LanguageTag.ExtendedLanguage as ExtendedLanguage
 import LanguageTag.Language as Language
 import LanguageTag.Parser
 import LanguageTag.PrivateUse as PrivateUse
