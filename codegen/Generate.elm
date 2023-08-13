@@ -109,14 +109,44 @@ commonFiles (Directory directory) shared modulesStatus =
                                     }
                                 )
                     )
+
+        defaultContent : Maybe (List String)
+        defaultContent =
+            Dict.get "defaultContent.json" directory.files
+                |> Maybe.andThen
+                    (\json ->
+                        json
+                            |> Json.Decode.decodeString defaultContentDecoder
+                            |> Result.toMaybe
+                    )
+
+        likelySubtags : Maybe (Dict String String)
+        likelySubtags =
+            Dict.get "likelySubtags.json" directory.files
+                |> Maybe.andThen
+                    (\json ->
+                        json
+                            |> Json.Decode.decodeString likelySubtagsDecoder
+                            |> Result.toMaybe
+                    )
+
+        defaultContentDecoder : Json.Decode.Decoder (List String)
+        defaultContentDecoder =
+            Json.Decode.at [ "defaultContent" ]
+                (Json.Decode.list Json.Decode.string)
+
+        likelySubtagsDecoder : Json.Decode.Decoder (Dict String String)
+        likelySubtagsDecoder =
+            Json.Decode.at [ "supplemental", "likelySubtags" ]
+                (Json.Decode.dict Json.Decode.string)
     in
     [ localizedFile allLocales modulesStatus
-    , mainFile allLocales modulesStatus
+    , mainFile allLocales defaultContent likelySubtags modulesStatus
     ]
 
 
-mainFile : List Locale -> Dict ModuleName ModuleStatus -> Elm.File
-mainFile allLocales modulesStatus =
+mainFile : List Locale -> Maybe (List String) -> Maybe (Dict String String) -> Dict ModuleName ModuleStatus -> Elm.File
+mainFile allLocales defaultContent likelySubtags modulesStatus =
     Elm.file [ "Cldr" ]
         [ countryCodeTypeDeclaration
         , allLocalesDeclaration allLocales
@@ -125,7 +155,63 @@ mainFile allLocales modulesStatus =
         , toAlpha2Declaration
         , fromAlpha2Declaration
         , allCountryCodesDeclaration
+        , likelySubtagsDeclaration allLocales defaultContent likelySubtags
         ]
+
+
+likelySubtagsDeclaration : List Locale -> Maybe (List String) -> Maybe (Dict String String) -> Elm.Declaration
+likelySubtagsDeclaration allLocales defaultContentMaybe likelySubtagsMaybe =
+    let
+        implementation : Elm.Expression -> Elm.Expression
+        implementation locale =
+            case ( likelySubtagsMaybe, defaultContentMaybe ) of
+                ( Nothing, _ ) ->
+                    Gen.Debug.todo "Could not parse likelySubtags.json"
+
+                ( _, Nothing ) ->
+                    Gen.Debug.todo "Could not parse defaultContent.json"
+
+                ( Just likelySubtags, Just defaultContent ) ->
+                    Elm.Case.string locale
+                        { cases =
+                            allLocales
+                                |> List.filterMap
+                                    (\{ key } ->
+                                        let
+                                            fromLikely () =
+                                                Dict.get key likelySubtags
+                                                    |> Maybe.map
+                                                        (\likelySubtag ->
+                                                            ( key
+                                                            , Gen.Maybe.make_.just <| Elm.string likelySubtag
+                                                            )
+                                                        )
+                                        in
+                                        case
+                                            List.filter
+                                                (\line -> String.startsWith (key ++ "-") line)
+                                                defaultContent
+                                        of
+                                            [] ->
+                                                fromLikely ()
+
+                                            [ likelySubtag ] ->
+                                                ( key
+                                                , Gen.Maybe.make_.just <| Elm.string likelySubtag
+                                                )
+                                                    |> Just
+
+                                            lines ->
+                                                fromLikely ()
+                                    )
+                        , otherwise = Gen.Maybe.make_.nothing
+                        }
+                        |> Elm.withType (Gen.Maybe.annotation_.maybe Annotation.string)
+    in
+    implementation
+        |> Elm.fn ( "locale", Just Annotation.string )
+        |> Elm.declaration "likelySubtags"
+        |> Elm.expose
 
 
 countryCodeTypeDeclaration : Elm.Declaration
@@ -195,12 +281,14 @@ fromAlpha2Declaration =
 
         implementation : Elm.Expression -> Elm.Expression
         implementation countryCodeExpr =
-            Elm.Case.string countryCodeExpr
+            Elm.Case.string (Gen.String.call_.toLower countryCodeExpr)
                 { cases =
                     allCountryCodes
                         |> List.map
                             (\countryCode ->
                                 ( countryCode
+                                    |> String.replace "_" ""
+                                    |> String.toLower
                                 , Elm.val countryCode
                                     |> Gen.Maybe.make_.just
                                 )
