@@ -8,6 +8,7 @@ import Elm.Annotation as Annotation exposing (Annotation)
 import Elm.Case
 import Elm.Case.Branch
 import Gen.CodeGen.Generate as Generate exposing (Directory(..))
+import Gen.Debug
 import Gen.Maybe
 import Gen.String
 import Iso3166
@@ -46,9 +47,12 @@ main =
                             , languagesEnglishDict = languagesEnglishDict
                             , territoriesEnglishDict = territoriesEnglishDict
                             }
+
+                        ( modulesStatus, languageFiles ) =
+                            files directory shared
                     in
-                    commonFiles directory shared
-                        ++ files directory shared
+                    commonFiles directory shared modulesStatus
+                        ++ languageFiles
         )
 
 
@@ -62,18 +66,31 @@ type alias Shared =
 type alias Locale =
     { key : String
     , fullName : String
-    , moduleName : List String
+    , moduleName : ModuleName
     }
 
 
 type alias Language =
     { fullName : String
-    , moduleName : List String
+    , moduleName : ModuleName
     }
 
 
-commonFiles : Directory -> Shared -> List Elm.File
-commonFiles (Directory directory) shared =
+type alias ModuleName =
+    List String
+
+
+type alias ModuleStatus =
+    { territories : DictStatus }
+
+
+type DictStatus
+    = Present
+    | Absent { parent : ModuleName }
+
+
+commonFiles : Directory -> Shared -> Dict ModuleName ModuleStatus -> List Elm.File
+commonFiles (Directory directory) shared modulesStatus =
     let
         allLocales : List Locale
         allLocales =
@@ -91,7 +108,7 @@ commonFiles (Directory directory) shared =
                                 )
                     )
     in
-    [ localizedFile allLocales
+    [ localizedFile allLocales modulesStatus
     , mainFile allLocales
     ]
 
@@ -291,15 +308,15 @@ sortSplitLocale l r =
                 cmp
 
 
-localizedFile : List Locale -> Elm.File
-localizedFile allLocales =
+localizedFile : List Locale -> Dict ModuleName ModuleStatus -> Elm.File
+localizedFile allLocales modulesStatus =
     Elm.file [ "Cldr", "Localized" ]
-        [ localizedCountryCodeToNameDeclaration allLocales
+        [ localizedCountryCodeToNameDeclaration allLocales modulesStatus
         ]
 
 
-localizedCountryCodeToNameDeclaration : List Locale -> Elm.Declaration
-localizedCountryCodeToNameDeclaration allLocales =
+localizedCountryCodeToNameDeclaration : List Locale -> Dict ModuleName ModuleStatus -> Elm.Declaration
+localizedCountryCodeToNameDeclaration allLocales modulesStatus =
     let
         countryCodeAnnotation : Annotation
         countryCodeAnnotation =
@@ -317,15 +334,30 @@ localizedCountryCodeToNameDeclaration allLocales =
                 locale
                 { case_ =
                     \{ moduleName } ->
-                        Elm.apply
-                            (Elm.value
-                                { importFrom = "Cldr" :: moduleName
-                                , name = "countryCodeToName"
-                                , annotation = Just functionAnnotation
-                                }
-                            )
-                            [ countryCode ]
-                            |> Gen.Maybe.make_.just
+                        let
+                            go : ModuleName -> Elm.Expression
+                            go name =
+                                case Dict.get name modulesStatus of
+                                    Just { territories } ->
+                                        case territories of
+                                            Present ->
+                                                Elm.apply
+                                                    (Elm.value
+                                                        { importFrom = "Cldr" :: moduleName
+                                                        , name = "countryCodeToName"
+                                                        , annotation = Just functionAnnotation
+                                                        }
+                                                    )
+                                                    [ countryCode ]
+                                                    |> Gen.Maybe.make_.just
+
+                                            Absent { parent } ->
+                                                go parent
+
+                                    Nothing ->
+                                        Gen.Debug.todo "Could not find whether the module was generated or not"
+                        in
+                        go moduleName
                 , otherwise = Gen.Maybe.make_.nothing
                 }
     in
@@ -342,7 +374,13 @@ localizedCountryCodeToNameDeclaration allLocales =
         |> Elm.expose
 
 
-files : Directory -> Shared -> List Elm.File
+files :
+    Directory
+    -> Shared
+    ->
+        ( Dict ModuleName ModuleStatus
+        , List Elm.File
+        )
 files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
     let
         ( allDictionaries, allErrors ) =
@@ -350,14 +388,13 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                 |> Dict.keys
                 |> List.foldl tryAddDictionary ( Dict.empty, [] )
 
-        allFiles : List Elm.File
-        allFiles =
+        ( allFiles, modulesStatus ) =
             allDictionaries
                 |> Dict.toList
-                |> List.map
-                    (\( moduleName, { fullName, territories } ) ->
+                |> List.foldl
+                    (\( moduleName, { fullName, territories } ) ( filesAcc, dictAcc ) ->
                         let
-                            parentModule : List String
+                            parentModule : ModuleName
                             parentModule =
                                 getParentModule territories moduleName
 
@@ -373,25 +410,44 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                                         , territories = Dict.empty
                                         }
                         in
-                        Elm.file ("Cldr" :: moduleName)
-                            [ countryCodeToNameDeclaration
+                        case
+                            countryCodeToNameDeclaration
                                 { fullName = parent.fullName
                                 , moduleName = parentModule
                                 , territories = parent.territories
                                 }
                                 fullName
                                 territories
-                            ]
+                        of
+                            Just declaration ->
+                                ( Elm.file ("Cldr" :: moduleName)
+                                    [ declaration
+                                    ]
+                                    :: filesAcc
+                                , Dict.insert moduleName { territories = Present } dictAcc
+                                )
+
+                            Nothing ->
+                                ( filesAcc
+                                , Dict.insert moduleName
+                                    { territories =
+                                        Absent
+                                            { parent = parentModule
+                                            }
+                                    }
+                                    dictAcc
+                                )
                     )
+                    ( [], Dict.empty )
 
         tryAddDictionary :
             String
             ->
-                ( Dict (List String) { fullName : String, territories : Dict String String }
+                ( Dict ModuleName { fullName : String, territories : Dict String String }
                 , List Elm.File
                 )
             ->
-                ( Dict (List String) { fullName : String, territories : Dict String String }
+                ( Dict ModuleName { fullName : String, territories : Dict String String }
                 , List Elm.File
                 )
         tryAddDictionary key ( dictAcc, errAcc ) =
@@ -428,10 +484,10 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                             :: errAcc
                         )
     in
-    allErrors ++ allFiles
+    ( modulesStatus, allErrors ++ allFiles )
 
 
-getParentModule : Dict String String -> List String -> List String
+getParentModule : Dict String String -> ModuleName -> ModuleName
 getParentModule territories moduleName =
     case moduleName of
         [ "Spanish", "Argentina" ] ->
@@ -579,7 +635,7 @@ toModuleName :
         , regionName : Maybe String
         , variantName : Maybe String
     }
-    -> List String
+    -> ModuleName
 toModuleName { splitLanguageName, scriptName, regionName, variantName } =
     (splitLanguageName
         ++ List.filterMap identity
@@ -753,14 +809,16 @@ toUpper input =
         |> String.replace "LT" "LT_"
 
 
+{-| Returns nothing if it's identical to the parent language.
+-}
 countryCodeToNameDeclaration :
     { fullName : String
-    , moduleName : List String
+    , moduleName : ModuleName
     , territories : Dict String String
     }
     -> String
     -> Dict String String
-    -> Elm.Declaration
+    -> Maybe Elm.Declaration
 countryCodeToNameDeclaration parent languageName territories =
     let
         countryCodeAnnotation : Annotation
@@ -812,10 +870,11 @@ countryCodeToNameDeclaration parent languageName territories =
                 |> String.join "\n"
     in
     if List.isEmpty branches then
-        parentFunction
-            |> Elm.declaration "countryCodeToName"
-            |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.fullName ++ " version.\n\n" ++ table)
-            |> Elm.expose
+        -- parentFunction
+        --     |> Elm.declaration "countryCodeToName"
+        --     |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.fullName ++ " version.\n\n" ++ table)
+        --     |> Elm.expose
+        Nothing
 
     else
         Elm.fn ( "countryCode", Just countryCodeAnnotation )
@@ -834,6 +893,7 @@ countryCodeToNameDeclaration parent languageName territories =
             |> Elm.declaration "countryCodeToName"
             |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\n" ++ table)
             |> Elm.expose
+            |> Just
 
 
 cleanName : String -> String
