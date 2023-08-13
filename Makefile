@@ -1,7 +1,7 @@
 YARN_RUN = node_modules/.bin/elm-codegen
 
 .PHONY:all
-all: src/Cldr/Territories.elm
+all: src/Cldr.elm
 
 build/cldr-json-modern.zip:
 	mkdir -p build
@@ -20,7 +20,6 @@ $(YARN_RUN): package.json yarn.lock
 codegen/Gen/Basics.elm: codegen/elm.codegen.json $(YARN_RUN)
 	yarn elm-codegen install
 
-src/Cldr/Territories.elm: codegen/Generate.elm codegen/elm.json codegen/Gen/Basics.elm $(YARN_RUN) build/cldr-localenames-modern/main/defaultContent.json
+src/Cldr.elm: codegen/Generate.elm codegen/elm.json codegen/Gen/Basics.elm $(YARN_RUN) build/cldr-localenames-modern/main/defaultContent.json
 	rm -rf src
 	yarn elm-codegen run ${CODEGEN_FLAGS} --flags-from build/cldr-localenames-modern/main --output src
-	touch $@
