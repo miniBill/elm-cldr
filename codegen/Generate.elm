@@ -13,7 +13,13 @@ import Gen.String
 import Iso3166
 import Json.Decode
 import Json.Encode
+import LanguageTag.Country as Country exposing (Country)
+import LanguageTag.ExtendedLanguage as ExtendedLanguage exposing (ExtendedLanguage)
+import LanguageTag.Language as Language
 import LanguageTag.Parser
+import LanguageTag.PrivateUse as PrivateUse
+import LanguageTag.Script as Script exposing (Script)
+import LanguageTag.Variant as Variant exposing (Variant)
 import Set exposing (Set)
 import String.Extra
 
@@ -475,44 +481,45 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
 
             parsed : Result String Language
             parsed =
-                case LanguageTag.Parser.parse key of
-                    Just (LanguageTag.Parser.Normal { language, script, region, variants, extensions, privateUse }) ->
+                case LanguageTag.Parser.parseBcp47 key of
+                    Just ( language, { script, region, variants, extensions, privateUse } ) ->
                         if not (List.isEmpty extensions) then
-                            Err <| "Unsupported! extension = " ++ String.join ", " extensions
-
-                        else if not (List.isEmpty privateUse) then
-                            Err <| "Unsupported! privateUse = " ++ String.join ", " privateUse
+                            Err <| "Unsupported! extension = " ++ String.join ", " (List.map ExtendedLanguage.toCodeString extensions)
 
                         else
-                            Result.map4
-                                (\( languageName, splitLanguageName ) scriptName regionName variantName ->
-                                    createLanguage
-                                        { languageName = languageName
-                                        , splitLanguageName = splitLanguageName
-                                        , scriptName = scriptName
-                                        , regionName = regionName
-                                        , variantName = variantName
-                                        }
-                                )
-                                (languageString language)
-                                (traverse scriptToString script)
-                                (traverse (regionToString territoriesEnglishDict) region)
-                                (variantsToString variants)
+                            case privateUse of
+                                Just privateUseParts ->
+                                    Err <| "Unsupported! privateUse = " ++ PrivateUse.toCodeString privateUseParts
 
-                    Just (LanguageTag.Parser.PrivateUse _) ->
-                        Err "Branch 'Just (PrivateUse _)' not implemented"
-
-                    Just (LanguageTag.Parser.Grandfathered _) ->
-                        Err "Branch 'Just (Grandfathered _)' not implemented"
+                                Nothing ->
+                                    Result.map4
+                                        (\( languageName, splitLanguageName ) scriptName regionName variantName ->
+                                            createLanguage
+                                                { languageName = languageName
+                                                , splitLanguageName = splitLanguageName
+                                                , scriptName = scriptName
+                                                , regionName = regionName
+                                                , variantName = variantName
+                                                }
+                                        )
+                                        (languageString language)
+                                        (traverse scriptToString script)
+                                        (traverse (regionToString territoriesEnglishDict) region)
+                                        (variantsToString variants)
 
                     Nothing ->
                         Err <| "Could not parse BCP 47 tag: " ++ key
 
-            languageString : String -> Result String ( String, List String )
+            languageString : Language.Language -> Result String ( String, List String )
             languageString language =
-                case Dict.get language languagesEnglishDict of
+                let
+                    languageCode : String
+                    languageCode =
+                        Language.toCodeString language
+                in
+                case Dict.get languageCode languagesEnglishDict of
                     Nothing ->
-                        Err <| "Language not found: " ++ language
+                        Err <| "Language not found: " ++ languageCode
 
                     Just languageName ->
                         case splitLanguage languageNames languageName of
@@ -589,9 +596,9 @@ toModuleName { splitLanguageName, scriptName, regionName, variantName } =
             )
 
 
-variantsToString : List String -> Result String (Maybe String)
+variantsToString : List Variant -> Result String (Maybe String)
 variantsToString variants =
-    case variants of
+    case List.map Variant.toCodeString variants of
         [] ->
             Ok Nothing
 
@@ -604,23 +611,28 @@ variantsToString variants =
         [ "tarask" ] ->
             Ok (Just "Taraškievica")
 
-        _ ->
-            Err <| "Unsupported! variants = " ++ String.join ", " variants
+        strings ->
+            Err <| "Unsupported! variants = " ++ String.join ", " strings
 
 
-regionToString : Dict String String -> String -> Result String String
+regionToString : Dict String String -> Country -> Result String String
 regionToString territoriesEnglishDict region =
-    case Dict.get region territoriesEnglishDict of
+    let
+        regionCode : String
+        regionCode =
+            Country.toCodeString region
+    in
+    case Dict.get regionCode territoriesEnglishDict of
         Nothing ->
-            Err <| "Could not find territory: " ++ region
+            Err <| "Could not find territory: " ++ regionCode
 
         Just territoryName ->
             Ok territoryName
 
 
-scriptToString : String -> Result String String
+scriptToString : Script -> Result String String
 scriptToString script =
-    case script of
+    case Script.toCodeString script of
         "Hans" ->
             Ok "Simplified"
 
@@ -639,8 +651,8 @@ scriptToString script =
         "Guru" ->
             Ok "Gurmukhi"
 
-        _ ->
-            Err <| "Unsupported! script = " ++ script
+        scriptString ->
+            Err <| "Unsupported! script = " ++ scriptString
 
 
 getEnglishData : Directory -> Result String ( Dict String String, Dict String String )
