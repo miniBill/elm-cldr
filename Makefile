@@ -19,4 +19,4 @@ codegen/Gen/Basics.elm: codegen/elm.codegen.json $(YARN_RUN)
 
 src/Cldr/Territories.elm: codegen/Generate.elm codegen/elm.json codegen/Gen/Basics.elm $(YARN_RUN) build/cldr-localenames-modern/README.md
 	rm -rf src
-	yarn elm-codegen run --flags-from build/cldr-localenames-modern/main --output src
+	yarn elm-codegen run ${CODEGEN_FLAGS} --flags-from build/cldr-localenames-modern/main --output src

@@ -86,7 +86,8 @@ type alias ModuleStatus =
 
 type DictStatus
     = Present
-    | Absent { parent : ModuleName }
+      -- Pointer to the parent ModuleName
+    | Absent ModuleName
 
 
 commonFiles : Directory -> Shared -> Dict ModuleName ModuleStatus -> List Elm.File
@@ -109,15 +110,16 @@ commonFiles (Directory directory) shared modulesStatus =
                     )
     in
     [ localizedFile allLocales modulesStatus
-    , mainFile allLocales
+    , mainFile allLocales modulesStatus
     ]
 
 
-mainFile : List Locale -> Elm.File
-mainFile allLocales =
+mainFile : List Locale -> Dict ModuleName ModuleStatus -> Elm.File
+mainFile allLocales modulesStatus =
     Elm.file [ "Cldr" ]
         [ countryCodeTypeDeclaration
         , allLocalesDeclaration allLocales
+        , allNontrivialLocalesDeclaration allLocales modulesStatus
         , localeToEnglishNameDeclaration allLocales
         , toAlpha2Declaration
         , fromAlpha2Declaration
@@ -157,6 +159,29 @@ allLocalesDeclaration allLocales =
         |> Elm.list
         |> Elm.declaration "allLocales"
         |> Elm.withDocumentation "All the supported locales."
+        |> Elm.expose
+
+
+allNontrivialLocalesDeclaration : List Locale -> Dict ModuleName ModuleStatus -> Elm.Declaration
+allNontrivialLocalesDeclaration allLocales modulesStatus =
+    allLocales
+        |> List.filterMap
+            (\{ key, moduleName } ->
+                case Dict.get moduleName modulesStatus of
+                    Just { territories } ->
+                        case territories of
+                            Present ->
+                                Just <| Elm.string key
+
+                            Absent _ ->
+                                Nothing
+
+                    Nothing ->
+                        Just <| Gen.Debug.todo <| "Could not find info about locale " ++ key
+            )
+        |> Elm.list
+        |> Elm.declaration "allNontrivialLocales"
+        |> Elm.withDocumentation "All the locales that are not identical to some parent locale."
         |> Elm.expose
 
 
@@ -343,7 +368,7 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
                                             Present ->
                                                 Elm.apply
                                                     (Elm.value
-                                                        { importFrom = "Cldr" :: moduleName
+                                                        { importFrom = "Cldr" :: name
                                                         , name = "countryCodeToName"
                                                         , annotation = Just functionAnnotation
                                                         }
@@ -351,7 +376,7 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
                                                     [ countryCode ]
                                                     |> Gen.Maybe.make_.just
 
-                                            Absent { parent } ->
+                                            Absent parent ->
                                                 go parent
 
                                     Nothing ->
@@ -391,6 +416,12 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
         ( allFiles, modulesStatus ) =
             allDictionaries
                 |> Dict.toList
+                |> List.sortBy
+                    (\( moduleName, { territories } ) ->
+                        ( List.length moduleName
+                        , List.length (getParentModule territories moduleName)
+                        )
+                    )
                 |> List.foldl
                     (\( moduleName, { fullName, territories } ) ( filesAcc, dictAcc ) ->
                         let
@@ -418,23 +449,22 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                                 }
                                 fullName
                                 territories
+                                dictAcc
                         of
                             Just declaration ->
                                 ( Elm.file ("Cldr" :: moduleName)
                                     [ declaration
                                     ]
                                     :: filesAcc
-                                , Dict.insert moduleName { territories = Present } dictAcc
+                                , Dict.insert moduleName
+                                    { territories = Present }
+                                    dictAcc
                                 )
 
                             Nothing ->
                                 ( filesAcc
                                 , Dict.insert moduleName
-                                    { territories =
-                                        Absent
-                                            { parent = parentModule
-                                            }
-                                    }
+                                    { territories = Absent parentModule }
                                     dictAcc
                                 )
                     )
@@ -818,8 +848,9 @@ countryCodeToNameDeclaration :
     }
     -> String
     -> Dict String String
+    -> Dict ModuleName ModuleStatus
     -> Maybe Elm.Declaration
-countryCodeToNameDeclaration parent languageName territories =
+countryCodeToNameDeclaration parent languageName territories modulesStatus =
     let
         countryCodeAnnotation : Annotation
         countryCodeAnnotation =
@@ -827,11 +858,25 @@ countryCodeToNameDeclaration parent languageName territories =
 
         parentFunction : Elm.Expression
         parentFunction =
-            Elm.value
-                { importFrom = "Cldr" :: parent.moduleName
-                , name = "countryCodeToName"
-                , annotation = Just <| Annotation.function [ countryCodeAnnotation ] Annotation.string
-                }
+            let
+                go name =
+                    case Dict.get name modulesStatus of
+                        Nothing ->
+                            Gen.Debug.todo ("Could not find module info for " ++ String.join "." name)
+
+                        Just status ->
+                            case status.territories of
+                                Present ->
+                                    Elm.value
+                                        { importFrom = "Cldr" :: name
+                                        , name = "countryCodeToName"
+                                        , annotation = Just <| Annotation.function [ countryCodeAnnotation ] Annotation.string
+                                        }
+
+                                Absent absent ->
+                                    go absent
+            in
+            go parent.moduleName
 
         branches : List Elm.Case.Branch
         branches =
