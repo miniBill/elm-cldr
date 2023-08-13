@@ -21,6 +21,7 @@ import LanguageTag.Parser
 import LanguageTag.PrivateUse as PrivateUse
 import LanguageTag.Script as Script exposing (Script)
 import LanguageTag.Variant as Variant exposing (Variant)
+import List.Extra
 import Set exposing (Set)
 import String.Extra
 
@@ -250,7 +251,7 @@ localeToEnglishNameDeclaration allLocales =
         implementation locale =
             caseOnLocale allLocales
                 locale
-                { case_ = \{ fullName } -> Gen.Maybe.make_.just <| Elm.string fullName
+                { case_ = \{ fullName } -> Just <| Gen.Maybe.make_.just <| Elm.string fullName
                 , otherwise = Gen.Maybe.make_.nothing
                 }
     in
@@ -272,7 +273,7 @@ caseOnLocale :
     List Locale
     -> Elm.Expression
     ->
-        { case_ : Locale -> Elm.Expression
+        { case_ : Locale -> Maybe Elm.Expression
         , otherwise : Elm.Expression
         }
     -> Elm.Expression
@@ -289,15 +290,19 @@ caseOnLocale allLocales input { case_, otherwise } =
             )
         |> List.sortWith
             (\( l, _ ) ( r, _ ) -> sortSplitLocale l r)
-        |> List.map
+        |> List.filterMap
             (\( splat, locale ) ->
-                Elm.Case.Branch.listWithRemaining
-                    { patterns = List.map (\s -> Elm.Case.Branch.string s ()) splat
-                    , gather = \i _ -> i
-                    , startWith = ()
-                    , finally = \_ _ -> case_ locale
-                    , remaining = Elm.Case.Branch.ignore ()
-                    }
+                case_ locale
+                    |> Maybe.map
+                        (\expr ->
+                            Elm.Case.Branch.listWithRemaining
+                                { patterns = List.map (\s -> Elm.Case.Branch.string s ()) splat
+                                , gather = \i _ -> i
+                                , startWith = ()
+                                , finally = \_ _ -> expr
+                                , remaining = Elm.Case.Branch.ignore ()
+                                }
+                        )
             )
         |> (\cases ->
                 cases ++ [ Elm.Case.Branch.ignore otherwise ]
@@ -360,8 +365,8 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
                 { case_ =
                     \{ moduleName } ->
                         let
-                            go : ModuleName -> Elm.Expression
-                            go name =
+                            go : Bool -> ModuleName -> Maybe Elm.Expression
+                            go first name =
                                 case Dict.get name modulesStatus of
                                     Just { territories } ->
                                         case territories of
@@ -375,14 +380,20 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
                                                     )
                                                     [ countryCode ]
                                                     |> Gen.Maybe.make_.just
+                                                    |> Just
 
                                             Absent parent ->
-                                                go parent
+                                                if first && List.Extra.isPrefixOf parent name then
+                                                    Nothing
+
+                                                else
+                                                    go False parent
 
                                     Nothing ->
                                         Gen.Debug.todo "Could not find whether the module was generated or not"
+                                            |> Just
                         in
-                        go moduleName
+                        go True moduleName
                 , otherwise = Gen.Maybe.make_.nothing
                 }
     in
