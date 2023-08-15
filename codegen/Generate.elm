@@ -14,6 +14,7 @@ import Gen.String
 import Iso3166
 import Json.Decode
 import Json.Encode
+import LanguageTag
 import LanguageTag.Country as Country exposing (Country)
 import LanguageTag.ExtendedLanguage as ExtendedLanguage
 import LanguageTag.Language as Language
@@ -30,27 +31,20 @@ main : Program Json.Encode.Value () ()
 main =
     Generate.fromDirectory
         (\directory ->
-            case getEnglishData directory of
+            case getLocaleData "en" directory of
                 Err e ->
                     [ error "Error" e ]
 
-                Ok ( languagesEnglishDict, territoriesEnglishDict ) ->
+                Ok english ->
                     let
-                        languageNames : Set String
-                        languageNames =
-                            Dict.values languagesEnglishDict
-                                |> Set.fromList
-                                |> Set.insert "Pidgin"
-                                |> Set.insert "Gaelic"
-
+                        shared : Shared
                         shared =
-                            { languageNames = languageNames
-                            , languagesEnglishDict = languagesEnglishDict
-                            , territoriesEnglishDict = territoriesEnglishDict
+                            { english = english
+                            , allLocales = allLocales
                             }
 
-                        ( modulesStatus, languageFiles ) =
-                            files directory shared
+                        { modulesStatus, languageFiles, allLocales } =
+                            files directory english
                     in
                     commonFiles directory shared modulesStatus
                         ++ languageFiles
@@ -58,21 +52,31 @@ main =
 
 
 type alias Shared =
-    { languageNames : Set String
-    , languagesEnglishDict : Dict String String
-    , territoriesEnglishDict : Dict String String
+    { english : LocaleData
+    , allLocales : Dict String LocaleData
+    }
+
+
+type alias LocaleData =
+    { languages : Dict String String
+    , languageNames : Set String
+    , territories : Dict String String
+    , scripts : Dict String String
+    , variants : Dict String String
     }
 
 
 type alias Locale =
     { key : String
-    , fullName : String
+    , fullEnglishName : String
+    , fullNativeName : String
     , moduleName : ModuleName
     }
 
 
 type alias Language =
-    { fullName : String
+    { fullEnglishName : String
+    , fullNativeName : String
     , moduleName : ModuleName
     }
 
@@ -101,10 +105,12 @@ commonFiles (Directory directory) shared modulesStatus =
                 |> List.filterMap
                     (\key ->
                         parseLanguageTag shared key
+                            |> Result.toMaybe
                             |> Maybe.map
-                                (\{ fullName, moduleName } ->
+                                (\{ fullEnglishName, fullNativeName, moduleName } ->
                                     { key = key
-                                    , fullName = fullName
+                                    , fullEnglishName = fullEnglishName
+                                    , fullNativeName = fullNativeName
                                     , moduleName = moduleName
                                     }
                                 )
@@ -141,17 +147,19 @@ commonFiles (Directory directory) shared modulesStatus =
                 (Json.Decode.dict Json.Decode.string)
     in
     [ localizedFile allLocales modulesStatus
-    , mainFile allLocales defaultContent likelySubtags modulesStatus
+    , mainFile allLocales { defaultContent = defaultContent, likelySubtags = likelySubtags } modulesStatus
     ]
 
 
-mainFile : List Locale -> Maybe (List String) -> Maybe (Dict String String) -> Dict ModuleName ModuleStatus -> Elm.File
-mainFile allLocales defaultContent likelySubtags modulesStatus =
+mainFile : List Locale -> { defaultContent : Maybe (List String), likelySubtags : Maybe (Dict String String) } -> Dict ModuleName ModuleStatus -> Elm.File
+mainFile allLocales { defaultContent, likelySubtags } modulesStatus =
     Elm.file [ "Cldr" ]
         [ countryCodeTypeDeclaration
         , allLocalesDeclaration allLocales
         , allNontrivialLocalesDeclaration allLocales modulesStatus
         , localeToEnglishNameDeclaration allLocales
+
+        -- , localeToNativeNameDeclaration allLocales
         , toAlpha2Declaration
         , fromAlpha2Declaration
         , allCountryCodesDeclaration
@@ -201,7 +209,7 @@ likelySubtagsDeclaration allLocales defaultContentMaybe likelySubtagsMaybe =
                                                 )
                                                     |> Just
 
-                                            lines ->
+                                            _ ->
                                                 fromLikely ()
                                     )
                         , otherwise = Gen.Maybe.make_.nothing
@@ -339,7 +347,7 @@ localeToEnglishNameDeclaration allLocales =
         implementation locale =
             caseOnLocale allLocales
                 locale
-                { case_ = \{ fullName } -> Just <| Gen.Maybe.make_.just <| Elm.string fullName
+                { case_ = \{ fullEnglishName } -> Just <| Gen.Maybe.make_.just <| Elm.string fullEnglishName
                 , otherwise = Gen.Maybe.make_.nothing
                 }
     in
@@ -351,6 +359,29 @@ localeToEnglishNameDeclaration allLocales =
                 (Annotation.maybe Annotation.string)
             )
         |> Elm.declaration "localeToEnglishName"
+        |> Elm.withDocumentation "Get the english name of a locale."
+        |> Elm.expose
+
+
+localeToNativeNameDeclaration : List Locale -> Elm.Declaration
+localeToNativeNameDeclaration allLocales =
+    let
+        implementation : Elm.Expression -> Elm.Expression
+        implementation locale =
+            caseOnLocale allLocales
+                locale
+                { case_ = \{ fullNativeName } -> Just <| Gen.Maybe.make_.just <| Elm.string fullNativeName
+                , otherwise = Gen.Maybe.make_.nothing
+                }
+    in
+    implementation
+        |> Elm.fn ( "locale", Just Annotation.string )
+        |> Elm.withType
+            (Annotation.function
+                [ Annotation.string ]
+                (Annotation.maybe Annotation.string)
+            )
+        |> Elm.declaration "localeToNativeName"
         |> Elm.withDocumentation "Get the english name of a locale."
         |> Elm.expose
 
@@ -500,12 +531,13 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
 
 files :
     Directory
-    -> Shared
+    -> LocaleData
     ->
-        ( Dict ModuleName ModuleStatus
-        , List Elm.File
-        )
-files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
+        { modulesStatus : Dict ModuleName ModuleStatus
+        , languageFiles : List Elm.File
+        , allLocales : Dict String LocaleData
+        }
+files ((Directory dir) as directory) english =
     let
         ( allDictionaries, allErrors ) =
             dir.directories
@@ -522,31 +554,31 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                         )
                     )
                 |> List.foldl
-                    (\( moduleName, { fullName, territories } ) ( filesAcc, dictAcc ) ->
+                    (\( moduleName, { fullEnglishName, territories } ) ( filesAcc, dictAcc ) ->
                         let
                             parentModule : ModuleName
                             parentModule =
                                 getParentModule territories moduleName
 
                             parent :
-                                { fullName : String
+                                { fullEnglishName : String
                                 , territories : Dict String String
                                 }
                             parent =
                                 allDictionaries
                                     |> Dict.get parentModule
                                     |> Maybe.withDefault
-                                        { fullName = ""
+                                        { fullEnglishName = ""
                                         , territories = Dict.empty
                                         }
                         in
                         case
                             countryCodeToNameDeclaration
-                                { fullName = parent.fullName
+                                { fullEnglishName = parent.fullEnglishName
                                 , moduleName = parentModule
                                 , territories = parent.territories
                                 }
-                                fullName
+                                fullEnglishName
                                 territories
                                 dictAcc
                         of
@@ -572,30 +604,30 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
         tryAddDictionary :
             String
             ->
-                ( Dict ModuleName { fullName : String, territories : Dict String String }
+                ( Dict ModuleName { fullEnglishName : String, territories : Dict String String }
                 , List Elm.File
                 )
             ->
-                ( Dict ModuleName { fullName : String, territories : Dict String String }
+                ( Dict ModuleName { fullEnglishName : String, territories : Dict String String }
                 , List Elm.File
                 )
         tryAddDictionary key ( dictAcc, errAcc ) =
-            case parseLanguageTag shared key of
-                Just { fullName, moduleName } ->
+            case parseLanguageTag { english = english, allLocales = Dict.empty } key of
+                Ok { fullEnglishName, moduleName } ->
                     case getTerritories key directory of
                         Ok territories ->
                             ( Dict.insert moduleName
-                                { fullName = fullName
+                                { fullEnglishName = fullEnglishName
                                 , territories = territories
                                 }
                                 dictAcc
                             , errAcc
                             )
 
-                        Err e ->
-                            ( dictAcc, error fullName e :: errAcc )
+                        Err err ->
+                            ( dictAcc, error fullEnglishName err :: errAcc )
 
-                Nothing ->
+                Err err ->
                     if key == "und" then
                         -- Unknown language
                         ( dictAcc, errAcc )
@@ -604,16 +636,19 @@ files ((Directory dir) as directory) ({ languagesEnglishDict } as shared) =
                         let
                             name : String
                             name =
-                                Dict.get key languagesEnglishDict
-                                    |> Maybe.withDefault "Nothing"
+                                Dict.get key english.languages
+                                    |> Maybe.withDefault ("key - " ++ key)
                         in
                         ( dictAcc
                         , error key
-                            ("Failed to parse language tag, language name is " ++ name)
+                            ("Failed to parse language tag, language name is " ++ name ++ ", error is: " ++ err)
                             :: errAcc
                         )
     in
-    ( modulesStatus, allErrors ++ allFiles )
+    { modulesStatus = modulesStatus
+    , languageFiles = allErrors ++ allFiles
+    , allLocales = Dict.empty
+    }
 
 
 getParentModule : Dict String String -> ModuleName -> ModuleName
@@ -648,10 +683,13 @@ getParentModule territories moduleName =
                 |> List.reverse
 
 
-parseLanguageTag : Shared -> String -> Maybe Language
-parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict } key =
+parseLanguageTag :
+    Shared
+    -> String
+    -> Result String Language
+parseLanguageTag { english, allLocales } key =
     if key == "und" then
-        Nothing
+        Err "Undefined language"
 
     else
         let
@@ -664,72 +702,84 @@ parseLanguageTag { languageNames, languagesEnglishDict, territoriesEnglishDict }
                     Just w ->
                         Result.map Just (f w)
 
-            parsed : Result String Language
-            parsed =
-                case LanguageTag.Parser.parseBcp47 key of
-                    Just ( language, { script, region, variants, extensions, privateUse } ) ->
-                        if not (List.isEmpty extensions) then
-                            Err <| "Unsupported! extension = " ++ String.join ", " (List.map ExtendedLanguage.toCodeString extensions)
+            getData :
+                Language.Language
+                -> LanguageTag.Options
+                -> LocaleData
+                ->
+                    Result
+                        String
+                        { languageName : String
+                        , splitLanguageName : List String
+                        , scriptName : Maybe String
+                        , regionName : Maybe String
+                        , variantName : Maybe String
+                        }
+            getData language options localeData =
+                Result.map4
+                    (\( languageName, splitLanguageName ) scriptName regionName variantName ->
+                        { languageName = languageName
+                        , splitLanguageName = splitLanguageName
+                        , scriptName = scriptName
+                        , regionName = regionName
+                        , variantName = variantName
+                        }
+                    )
+                    (languageToString localeData language)
+                    (traverse (scriptToString localeData) options.script)
+                    (traverse (regionToString localeData) options.region)
+                    (variantsToString localeData options.variants)
 
-                        else
-                            case privateUse of
-                                Just privateUseParts ->
-                                    Err <| "Unsupported! privateUse = " ++ PrivateUse.toCodeString privateUseParts
-
-                                Nothing ->
-                                    Result.map4
-                                        (\( languageName, splitLanguageName ) scriptName regionName variantName ->
-                                            createLanguage
-                                                { languageName = languageName
-                                                , splitLanguageName = splitLanguageName
-                                                , scriptName = scriptName
-                                                , regionName = regionName
-                                                , variantName = variantName
-                                                }
-                                        )
-                                        (languageString language)
-                                        (traverse scriptToString script)
-                                        (traverse (regionToString territoriesEnglishDict) region)
-                                        (variantsToString variants)
-
-                    Nothing ->
-                        Err <| "Could not parse BCP 47 tag: " ++ key
-
-            languageString : Language.Language -> Result String ( String, List String )
-            languageString language =
+            languageToString : LocaleData -> Language.Language -> Result String ( String, List String )
+            languageToString localeData language =
                 let
                     languageCode : String
                     languageCode =
                         Language.toCodeString language
                 in
-                case Dict.get languageCode languagesEnglishDict of
+                case Dict.get languageCode localeData.languages of
                     Nothing ->
                         Err <| "Language not found: " ++ languageCode
 
                     Just languageName ->
-                        case splitLanguage languageNames languageName of
+                        case splitLanguage localeData languageName of
                             Nothing ->
                                 Err <| "Failed to split language name: " ++ languageName
 
                             Just splat ->
                                 Ok ( languageName, splat )
         in
-        Result.toMaybe parsed
+        case LanguageTag.Parser.parseBcp47 key of
+            Just ( language, options ) ->
+                if not (List.isEmpty options.extensions) then
+                    Err <| "Unsupported! extension = " ++ String.join ", " (List.map ExtendedLanguage.toCodeString options.extensions)
 
+                else
+                    case options.privateUse of
+                        Just privateUseParts ->
+                            Err <| "Unsupported! privateUse = " ++ PrivateUse.toCodeString privateUseParts
 
-createLanguage :
-    { a
-        | languageName : String
-        , splitLanguageName : List String
-        , scriptName : Maybe String
-        , regionName : Maybe String
-        , variantName : Maybe String
-    }
-    -> Language
-createLanguage data =
-    { fullName = fullLanguageName data
-    , moduleName = toModuleName data
-    }
+                        Nothing ->
+                            Result.map2
+                                (\englishData nativeData ->
+                                    { fullEnglishName = fullLanguageName englishData
+                                    , fullNativeName =
+                                        Maybe.map fullLanguageName nativeData
+                                            |> Maybe.withDefault ""
+                                    , moduleName = toModuleName englishData
+                                    }
+                                )
+                                (getData language options english)
+                                (case Dict.get key allLocales of
+                                    Nothing ->
+                                        Ok Nothing
+
+                                    Just localeData ->
+                                        Result.map Just <| getData language options localeData
+                                )
+
+            Nothing ->
+                Err <| "Could not parse BCP 47 tag: " ++ key
 
 
 fullLanguageName :
@@ -781,114 +831,105 @@ toModuleName { splitLanguageName, scriptName, regionName, variantName } =
             )
 
 
-variantsToString : List Variant -> Result String (Maybe String)
-variantsToString variants =
-    case List.map Variant.toCodeString variants of
+variantsToString : LocaleData -> List Variant -> Result String (Maybe String)
+variantsToString localeData variants =
+    case variants of
+        [ variant ] ->
+            Result.map Just <| variantToString localeData variant
+
         [] ->
             Ok Nothing
 
-        [ "polyton" ] ->
-            Ok (Just "Polytonic")
-
-        [ "valencia" ] ->
-            Ok (Just "Valencia")
-
-        [ "tarask" ] ->
-            Ok (Just "Taraškievica")
-
-        strings ->
-            Err <| "Unsupported! variants = " ++ String.join ", " strings
+        _ ->
+            Err "Multiple variant are not supported"
 
 
-regionToString : Dict String String -> Country -> Result String String
-regionToString territoriesEnglishDict region =
+variantToString : LocaleData -> Variant -> Result String String
+variantToString localeData variant =
     let
-        regionCode : String
-        regionCode =
-            Country.toCodeString region
+        variantCode : String
+        variantCode =
+            Variant.toCodeString variant
     in
-    case Dict.get regionCode territoriesEnglishDict of
+    case Dict.get variantCode localeData.variants of
         Nothing ->
-            Err <| "Could not find territory: " ++ regionCode
+            Err <| "Could not find variant: " ++ variantCode
 
         Just territoryName ->
             Ok territoryName
 
 
-scriptToString : Script -> Result String String
-scriptToString script =
-    case Script.toCodeString script of
-        "Hans" ->
-            Ok "Simplified"
+regionToString : LocaleData -> Country -> Result String String
+regionToString localeData region =
+    let
+        regionCode : String
+        regionCode =
+            Country.toCodeString region
+    in
+    case Dict.get regionCode localeData.territories of
+        Nothing ->
+            Err <| "Could not find region: " ++ regionCode
 
-        "Hant" ->
-            Ok "Traditional"
-
-        "Latn" ->
-            Ok "Latin"
-
-        "Cyrl" ->
-            Ok "Cyrillic"
-
-        "Arab" ->
-            Ok "Arabic"
-
-        "Guru" ->
-            Ok "Gurmukhi"
-
-        scriptString ->
-            Err <| "Unsupported! script = " ++ scriptString
+        Just territoryName ->
+            Ok territoryName
 
 
-getEnglishData : Directory -> Result String ( Dict String String, Dict String String )
-getEnglishData directory =
-    Result.map2 Tuple.pair
-        (getLanguages "en" directory)
-        (getTerritories "en" directory)
+scriptToString : LocaleData -> Script -> Result String String
+scriptToString localeData script =
+    let
+        scriptString : String
+        scriptString =
+            Script.toCodeString script
+    in
+    case Dict.get scriptString localeData.scripts of
+        Nothing ->
+            Err <| "Could not find script: " ++ scriptString
+
+        Just name ->
+            Ok name
+
+
+getLocaleData : String -> Directory -> Result String LocaleData
+getLocaleData key directory =
+    Result.map4
+        (\languages territories scripts variants ->
+            { languages = languages
+            , languageNames =
+                if key == "en" then
+                    languages
+                        |> Dict.values
+                        |> Set.fromList
+                        |> Set.insert "Pidgin"
+                        |> Set.insert "Gaelic"
+
+                else
+                    languages
+                        |> Dict.values
+                        |> Set.fromList
+            , territories = territories
+            , scripts = scripts
+            , variants = variants
+            }
+        )
+        (getFile "languages" key directory)
+        (getTerritories key directory)
+        (getFile "scripts" key directory)
+        (getVariants key directory)
 
 
 getTerritories : String -> Directory -> Result String (Dict String String)
-getTerritories key (Directory directory) =
-    case Dict.get key directory.directories of
-        Just (Directory subdirectory) ->
-            case Dict.get "territories.json" subdirectory.files of
-                Just territoriesJson ->
-                    decodeTerritories key territoriesJson
-                        |> Result.mapError (\e -> "\"territories.json\": decoding failed: " ++ Json.Decode.errorToString e)
-
-                Nothing ->
-                    Err "Could not find \"territories.json\""
-
-        Nothing ->
-            Err <| "Could not find directory \"" ++ key ++ "\""
-
-
-getLanguages : String -> Directory -> Result String (Dict String String)
-getLanguages key (Directory directory) =
-    case Dict.get key directory.directories of
-        Just (Directory subdirectory) ->
-            case Dict.get "languages.json" subdirectory.files of
-                Just languagesJson ->
-                    Result.mapError (\e -> "\"languages.json\": decoding failed: " ++ Json.Decode.errorToString e) <| decodeLanguages languagesJson
-
-                Nothing ->
-                    Err "Could not find \"languages.json\""
-
-        Nothing ->
-            Err <| "Could not find directory \"" ++ key ++ "\""
-
-
-decodeTerritories : String -> String -> Result Json.Decode.Error (Dict String String)
-decodeTerritories key input =
+getTerritories key directory =
     let
-        decoder =
-            Json.Decode.at
-                [ "main"
-                , key
-                , "localeDisplayNames"
-                , "territories"
-                ]
-                (Json.Decode.dict Json.Decode.string)
+        fixup : Dict String String -> Dict String String
+        fixup dict =
+            dict
+                |> replaceWithVariant "CD"
+                |> replaceWithVariant "CG"
+                |> replaceWithVariant "CZ"
+                |> replaceWithShort "HK"
+                |> replaceWithShort "MO"
+                |> replaceWithShort "PS"
+                |> replaceWithVariant "TL"
 
         replaceWithVariant : String -> Dict String String -> Dict String String
         replaceWithVariant k =
@@ -907,18 +948,52 @@ decodeTerritories key input =
                 Just v ->
                     Dict.insert to v dict
     in
-    Json.Decode.decodeString decoder input
-        |> Result.map
-            (\dict ->
+    getFile "territories" key directory
+        |> Result.map fixup
+
+
+getVariants : String -> Directory -> Result String (Dict String String)
+getVariants key directory =
+    let
+        fixup : Dict String v -> Dict String v
+        fixup dict =
+            Dict.foldl
+                (\k v acc ->
+                    Dict.insert (String.toLower k) v acc
+                )
+                Dict.empty
                 dict
-                    |> replaceWithVariant "CD"
-                    |> replaceWithVariant "CG"
-                    |> replaceWithVariant "CZ"
-                    |> replaceWithShort "HK"
-                    |> replaceWithShort "MO"
-                    |> replaceWithShort "PS"
-                    |> replaceWithVariant "TL"
-            )
+    in
+    getFile "variants" key directory
+        |> Result.map fixup
+
+
+getFile : String -> String -> Directory -> Result String (Dict String String)
+getFile fileName key (Directory directory) =
+    case Dict.get key directory.directories of
+        Just (Directory subdirectory) ->
+            case Dict.get (fileName ++ ".json") subdirectory.files of
+                Just json ->
+                    Json.Decode.decodeString
+                        (Json.Decode.at
+                            [ "main"
+                            , key
+                            , "localeDisplayNames"
+                            , fileName
+                            ]
+                            (Json.Decode.dict Json.Decode.string)
+                        )
+                        json
+                        |> Result.mapError
+                            (\e ->
+                                "\"" ++ fileName ++ ".json\": decoding failed: " ++ Json.Decode.errorToString e
+                            )
+
+                Nothing ->
+                    Err <| "Could not find \"" ++ fileName ++ ".json\""
+
+        Nothing ->
+            Err <| "Could not find directory \"" ++ key ++ "\""
 
 
 allCountryCodes : List String
@@ -941,7 +1016,7 @@ toUpper input =
 {-| Returns nothing if it's identical to the parent language.
 -}
 countryCodeToNameDeclaration :
-    { fullName : String
+    { fullEnglishName : String
     , moduleName : ModuleName
     , territories : Dict String String
     }
@@ -1016,7 +1091,7 @@ countryCodeToNameDeclaration parent languageName territories modulesStatus =
     if List.isEmpty branches then
         -- parentFunction
         --     |> Elm.declaration "countryCodeToName"
-        --     |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.fullName ++ " version.\n\n" ++ table)
+        --     |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.fullEnglishName ++ " version.\n\n" ++ table)
         --     |> Elm.expose
         Nothing
 
@@ -1052,8 +1127,8 @@ cleanName name =
         |> String.Extra.toSentenceCase
 
 
-splitLanguage : Set String -> String -> Maybe (List String)
-splitLanguage languagesNames lang =
+splitLanguage : LocaleData -> String -> Maybe (List String)
+splitLanguage localeData lang =
     case
         cleanName lang
             |> String.split " "
@@ -1066,17 +1141,17 @@ splitLanguage languagesNames lang =
             Just [ "Hindi", "Latin" ]
 
         [ prefix, suffix ] ->
-            if Set.member suffix languagesNames then
+            if Set.member suffix localeData.languageNames then
                 Just [ suffix, prefix ]
 
-            else if Set.member prefix languagesNames then
+            else if Set.member prefix localeData.languageNames then
                 Just [ prefix, suffix ]
 
             else
                 Nothing
 
         head :: tail ->
-            if Set.member head languagesNames then
+            if Set.member head localeData.languageNames then
                 Just [ head, String.concat <| List.reverse tail ]
 
             else
@@ -1092,19 +1167,3 @@ error file msg =
         [ Elm.declaration "error" <|
             Elm.string msg
         ]
-
-
-decodeLanguages : String -> Result Json.Decode.Error (Dict String String)
-decodeLanguages input =
-    let
-        decoder =
-            Json.Decode.at
-                [ "main"
-                , "en"
-                , "localeDisplayNames"
-                , "languages"
-                ]
-                (Json.Decode.dict Json.Decode.string)
-    in
-    input
-        |> Json.Decode.decodeString decoder
