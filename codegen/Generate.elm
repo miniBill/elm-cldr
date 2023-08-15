@@ -58,7 +58,8 @@ type alias Shared =
 
 
 type alias LocaleData =
-    { languages : Dict String String
+    { key : String
+    , languages : Dict String String
     , languageNames : Set String
     , territories : Dict String String
     , scripts : Dict String String
@@ -158,8 +159,7 @@ mainFile allLocales { defaultContent, likelySubtags } modulesStatus =
         , allLocalesDeclaration allLocales
         , allNontrivialLocalesDeclaration allLocales modulesStatus
         , localeToEnglishNameDeclaration allLocales
-
-        -- , localeToNativeNameDeclaration allLocales
+        , localeToNativeNameDeclaration allLocales
         , toAlpha2Declaration
         , fromAlpha2Declaration
         , allCountryCodesDeclaration
@@ -370,7 +370,13 @@ localeToNativeNameDeclaration allLocales =
         implementation locale =
             caseOnLocale allLocales
                 locale
-                { case_ = \{ fullNativeName } -> Just <| Gen.Maybe.make_.just <| Elm.string fullNativeName
+                { case_ =
+                    \{ fullNativeName } ->
+                        if String.isEmpty fullNativeName then
+                            Nothing
+
+                        else
+                            Just <| Gen.Maybe.make_.just <| Elm.string fullNativeName
                 , otherwise = Gen.Maybe.make_.nothing
                 }
     in
@@ -539,98 +545,100 @@ files :
         }
 files ((Directory dir) as directory) english =
     let
-        ( allDictionaries, allErrors ) =
+        { allDictionaries, allErrors } =
             dir.directories
                 |> Dict.keys
-                |> List.foldl tryAddDictionary ( Dict.empty, [] )
+                |> List.foldl tryAddDictionary { allDictionaries = Dict.empty, allErrors = [] }
 
-        ( allFiles, modulesStatus ) =
+        { allFiles, modulesStatus, allLocales } =
             allDictionaries
                 |> Dict.toList
                 |> List.sortBy
-                    (\( moduleName, { territories } ) ->
+                    (\( moduleName, { data } ) ->
                         ( List.length moduleName
-                        , List.length (getParentModule territories moduleName)
+                        , List.length (getParentModule data.territories moduleName)
                         )
                     )
                 |> List.foldl
-                    (\( moduleName, { fullEnglishName, territories } ) ( filesAcc, dictAcc ) ->
+                    (\( moduleName, { fullEnglishName, data } ) acc ->
                         let
-                            parentModule : ModuleName
-                            parentModule =
-                                getParentModule territories moduleName
+                            parentModuleName : ModuleName
+                            parentModuleName =
+                                getParentModule data.territories moduleName
 
                             parent :
-                                { fullEnglishName : String
-                                , territories : Dict String String
-                                }
+                                Maybe
+                                    { fullEnglishName : String
+                                    , data : LocaleData
+                                    }
                             parent =
-                                allDictionaries
-                                    |> Dict.get parentModule
-                                    |> Maybe.withDefault
-                                        { fullEnglishName = ""
-                                        , territories = Dict.empty
-                                        }
+                                Dict.get parentModuleName allDictionaries
                         in
                         case
                             countryCodeToNameDeclaration
-                                { fullEnglishName = parent.fullEnglishName
-                                , moduleName = parentModule
-                                , territories = parent.territories
+                                { parentModuleName = parentModuleName }
+                                parent
+                                { fullEnglishName = fullEnglishName
+                                , territories = data.territories
                                 }
-                                fullEnglishName
-                                territories
-                                dictAcc
+                                acc.modulesStatus
                         of
                             Just declaration ->
-                                ( Elm.file ("Cldr" :: moduleName)
-                                    [ declaration
-                                    ]
-                                    :: filesAcc
-                                , Dict.insert moduleName
-                                    { territories = Present }
-                                    dictAcc
-                                )
+                                { acc
+                                    | allFiles =
+                                        Elm.file ("Cldr" :: moduleName)
+                                            [ declaration
+                                            ]
+                                            :: acc.allFiles
+                                    , modulesStatus =
+                                        Dict.insert moduleName
+                                            { territories = Present }
+                                            acc.modulesStatus
+                                    , allLocales = Dict.insert data.key data acc.allLocales
+                                }
 
                             Nothing ->
-                                ( filesAcc
-                                , Dict.insert moduleName
-                                    { territories = Absent parentModule }
-                                    dictAcc
-                                )
+                                { acc
+                                    | modulesStatus =
+                                        Dict.insert moduleName
+                                            { territories = Absent parentModuleName }
+                                            acc.modulesStatus
+                                    , allLocales = Dict.insert data.key data acc.allLocales
+                                }
                     )
-                    ( [], Dict.empty )
+                    { allFiles = [], modulesStatus = Dict.empty, allLocales = Dict.empty }
 
         tryAddDictionary :
             String
             ->
-                ( Dict ModuleName { fullEnglishName : String, territories : Dict String String }
-                , List Elm.File
-                )
+                { allDictionaries : Dict ModuleName { fullEnglishName : String, data : LocaleData }
+                , allErrors : List Elm.File
+                }
             ->
-                ( Dict ModuleName { fullEnglishName : String, territories : Dict String String }
-                , List Elm.File
-                )
-        tryAddDictionary key ( dictAcc, errAcc ) =
+                { allDictionaries : Dict ModuleName { fullEnglishName : String, data : LocaleData }
+                , allErrors : List Elm.File
+                }
+        tryAddDictionary key acc =
             case parseLanguageTag { english = english, allLocales = Dict.empty } key of
                 Ok { fullEnglishName, moduleName } ->
-                    case getTerritories key directory of
-                        Ok territories ->
-                            ( Dict.insert moduleName
-                                { fullEnglishName = fullEnglishName
-                                , territories = territories
-                                }
-                                dictAcc
-                            , errAcc
-                            )
+                    case getLocaleData key directory of
+                        Ok data ->
+                            { acc
+                                | allDictionaries =
+                                    Dict.insert moduleName
+                                        { fullEnglishName = fullEnglishName
+                                        , data = data
+                                        }
+                                        acc.allDictionaries
+                            }
 
                         Err err ->
-                            ( dictAcc, error fullEnglishName err :: errAcc )
+                            { acc | allErrors = error fullEnglishName err :: acc.allErrors }
 
                 Err err ->
                     if key == "und" then
                         -- Unknown language
-                        ( dictAcc, errAcc )
+                        acc
 
                     else
                         let
@@ -638,16 +646,16 @@ files ((Directory dir) as directory) english =
                             name =
                                 Dict.get key english.languages
                                     |> Maybe.withDefault ("key - " ++ key)
+
+                            msg : String
+                            msg =
+                                "Failed to parse language tag, language name is " ++ name ++ ", error is: " ++ err
                         in
-                        ( dictAcc
-                        , error key
-                            ("Failed to parse language tag, language name is " ++ name ++ ", error is: " ++ err)
-                            :: errAcc
-                        )
+                        { acc | allErrors = error key msg :: acc.allErrors }
     in
     { modulesStatus = modulesStatus
     , languageFiles = allErrors ++ allFiles
-    , allLocales = Dict.empty
+    , allLocales = allLocales
     }
 
 
@@ -775,7 +783,9 @@ parseLanguageTag { english, allLocales } key =
                                         Ok Nothing
 
                                     Just localeData ->
-                                        Result.map Just <| getData language options localeData
+                                        getData language options localeData
+                                            |> Result.toMaybe
+                                            |> Ok
                                 )
 
             Nothing ->
@@ -827,6 +837,7 @@ toModuleName { splitLanguageName, scriptName, regionName, variantName } =
             (\name ->
                 name
                     |> cleanName
+                    |> String.replace "orthography" ""
                     |> String.replace " " ""
             )
 
@@ -853,10 +864,17 @@ variantToString localeData variant =
     in
     case Dict.get variantCode localeData.variants of
         Nothing ->
-            Err <| "Could not find variant: " ++ variantCode
+            Err <|
+                "Could not find variant: "
+                    ++ variantCode
+                    ++ " in locale "
+                    ++ localeData.key
+                    ++ ", available variants are [ "
+                    ++ String.join ", " (Dict.keys localeData.variants)
+                    ++ " ]"
 
-        Just territoryName ->
-            Ok territoryName
+        Just variantName ->
+            Ok variantName
 
 
 regionToString : LocaleData -> Country -> Result String String
@@ -893,7 +911,8 @@ getLocaleData : String -> Directory -> Result String LocaleData
 getLocaleData key directory =
     Result.map4
         (\languages territories scripts variants ->
-            { languages = languages
+            { key = key
+            , languages = languages
             , languageNames =
                 if key == "en" then
                     languages
@@ -966,6 +985,9 @@ getVariants key directory =
     in
     getFile "variants" key directory
         |> Result.map fixup
+        -- Some locales don't have a variants.json file
+        |> Result.withDefault Dict.empty
+        |> Ok
 
 
 getFile : String -> String -> Directory -> Result String (Dict String String)
@@ -1016,15 +1038,19 @@ toUpper input =
 {-| Returns nothing if it's identical to the parent language.
 -}
 countryCodeToNameDeclaration :
-    { fullEnglishName : String
-    , moduleName : ModuleName
-    , territories : Dict String String
-    }
-    -> String
-    -> Dict String String
+    { parentModuleName : ModuleName }
+    ->
+        Maybe
+            { fullEnglishName : String
+            , data : LocaleData
+            }
+    ->
+        { fullEnglishName : String
+        , territories : Dict String String
+        }
     -> Dict ModuleName ModuleStatus
     -> Maybe Elm.Declaration
-countryCodeToNameDeclaration parent languageName territories modulesStatus =
+countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, territories } modulesStatus =
     let
         countryCodeAnnotation : Annotation
         countryCodeAnnotation =
@@ -1050,7 +1076,7 @@ countryCodeToNameDeclaration parent languageName territories modulesStatus =
                                 Absent absent ->
                                     go absent
             in
-            go parent.moduleName
+            go parentModuleName
 
         branches : List Elm.Case.Branch
         branches =
@@ -1065,7 +1091,13 @@ countryCodeToNameDeclaration parent languageName territories modulesStatus =
                         Dict.get countryCodeClean territories
                             |> Maybe.andThen
                                 (\name ->
-                                    if Just name == Dict.get countryCodeClean parent.territories then
+                                    let
+                                        parentName =
+                                            parent
+                                                |> Maybe.map (\{ data } -> data.territories)
+                                                |> Maybe.andThen (Dict.get countryCodeClean)
+                                    in
+                                    if Just name == parentName then
                                         Nothing
 
                                     else
@@ -1091,7 +1123,7 @@ countryCodeToNameDeclaration parent languageName territories modulesStatus =
     if List.isEmpty branches then
         -- parentFunction
         --     |> Elm.declaration "countryCodeToName"
-        --     |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\nThis is identical to the " ++ parent.fullEnglishName ++ " version.\n\n" ++ table)
+        --     |> Elm.withDocumentation ("Name for `CountryCode` in " ++ fullEnglishName ++ ".\n\nThis is identical to the " ++ parent.fullEnglishName ++ " version.\n\n" ++ table)
         --     |> Elm.expose
         Nothing
 
@@ -1110,7 +1142,7 @@ countryCodeToNameDeclaration parent languageName territories modulesStatus =
                     |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
             )
             |> Elm.declaration "countryCodeToName"
-            |> Elm.withDocumentation ("Name for `CountryCode` in " ++ languageName ++ ".\n\n" ++ table)
+            |> Elm.withDocumentation ("Name for `CountryCode` in " ++ fullEnglishName ++ ".\n\n" ++ table)
             |> Elm.expose
             |> Just
 
