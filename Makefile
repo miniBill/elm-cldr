@@ -24,5 +24,5 @@ codegen/Gen/Basics.elm: codegen/elm.codegen.json $(YARN_RUN)
 	yarn elm-codegen install
 
 src/Cldr.elm: codegen/Generate.elm codegen/elm.json codegen/Gen/Basics.elm $(YARN_RUN) build/cldr-localenames-modern/main/defaultContent.json build/cldr-localenames-modern/main/likelySubtags.json
-	rm -rf src
+	rm -rf src/Cldr
 	yarn elm-codegen run ${CODEGEN_FLAGS} --flags-from build/cldr-localenames-modern/main --output src

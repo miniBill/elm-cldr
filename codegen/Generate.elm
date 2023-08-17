@@ -662,11 +662,49 @@ files ((Directory dir) as directory) english =
 getParentModule : Dict String String -> ModuleName -> ModuleName
 getParentModule territories moduleName =
     case moduleName of
-        [ "Spanish", "Argentina" ] ->
-            [ "Spanish" ]
+        [ "Spanish", region ] ->
+            let
+                likeBrazil : List String
+                likeBrazil =
+                    [ "Belize"
+                    , "Cuba"
+                    , "LatinAmerica"
+                    , "Uruguay"
+                    ]
 
-        [ "Spanish", _ ] ->
-            [ "Spanish", "Argentina" ]
+                likeArgentina : List String
+                likeArgentina =
+                    [ "Bolivia"
+                    , "Brazil"
+                    , "Chile"
+                    , "Colombia"
+                    , "CostaRica"
+                    , "DominicanRepublic"
+                    , "Ecuador"
+                    , "ElSalvador"
+                    , "Guatemala"
+                    , "Honduras"
+                    , "Mexico"
+                    , "Nicaragua"
+                    , "Panama"
+                    , "Paraguay"
+                    , "Peru"
+                    , "PuertoRico"
+                    , "UnitedStates"
+                    , "Venezuela"
+                    ]
+            in
+            if region == "ElSalvador" then
+                [ "Spanish", "PuertoRico" ]
+
+            else if List.member region likeBrazil then
+                [ "Spanish", "Brazil" ]
+
+            else if List.member region likeArgentina then
+                [ "Spanish", "Argentina" ]
+
+            else
+                [ "Spanish" ]
 
         [ "English", "UnitedKingdom" ] ->
             [ "English" ]
@@ -1021,14 +1059,14 @@ getFile fileName key (Directory directory) =
 allCountryCodes : List String
 allCountryCodes =
     Iso3166.all
-        |> List.map (Iso3166.toAlpha2 >> toUpper)
+        |> List.map (Iso3166.toAlpha2 >> toVariantName)
         -- Kosovo
         |> (::) "XK"
         |> List.sort
 
 
-toUpper : String -> String
-toUpper input =
+toVariantName : String -> String
+toVariantName input =
     input
         |> String.toUpper
         |> String.replace "GT" "GT_"
