@@ -33,7 +33,7 @@ main =
         (\directory ->
             case getLocaleData "en" directory of
                 Err e ->
-                    [ error "Error" e ]
+                    [ errorFile "Error" e ]
 
                 Ok english ->
                     let
@@ -633,7 +633,7 @@ files ((Directory dir) as directory) english =
                             }
 
                         Err err ->
-                            { acc | allErrors = error fullEnglishName err :: acc.allErrors }
+                            { acc | allErrors = errorFile fullEnglishName err :: acc.allErrors }
 
                 Err err ->
                     if key == "und" then
@@ -651,7 +651,7 @@ files ((Directory dir) as directory) english =
                             msg =
                                 "Failed to parse language tag, language name is " ++ name ++ ", error is: " ++ err
                         in
-                        { acc | allErrors = error key msg :: acc.allErrors }
+                        { acc | allErrors = errorFile key msg :: acc.allErrors }
     in
     { modulesStatus = modulesStatus
     , languageFiles = allErrors ++ allFiles
@@ -1231,8 +1231,8 @@ splitLanguage localeData lang =
             Nothing
 
 
-error : String -> String -> Elm.File
-error file msg =
+errorFile : String -> String -> Elm.File
+errorFile file msg =
     Elm.file [ file ]
         [ Elm.declaration "error" <|
             Elm.string msg
