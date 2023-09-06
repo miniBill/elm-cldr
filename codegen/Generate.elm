@@ -15,11 +15,11 @@ import Iso3166
 import Json.Decode
 import Json.Encode
 import LanguageTag
-import LanguageTag.Country as Country exposing (Country)
 import LanguageTag.ExtendedLanguage as ExtendedLanguage
 import LanguageTag.Language as Language
 import LanguageTag.Parser
 import LanguageTag.PrivateUse as PrivateUse
+import LanguageTag.Region as Region exposing (Region)
 import LanguageTag.Script as Script exposing (Script)
 import LanguageTag.Variant as Variant exposing (Variant)
 import List.Extra
@@ -915,12 +915,12 @@ variantToString localeData variant =
             Ok variantName
 
 
-regionToString : LocaleData -> Country -> Result String String
+regionToString : LocaleData -> Region -> Result String String
 regionToString localeData region =
     let
         regionCode : String
         regionCode =
-            Country.toCodeString region
+            Region.toCodeString region
     in
     case Dict.get regionCode localeData.territories of
         Nothing ->
