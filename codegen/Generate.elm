@@ -12,7 +12,7 @@ import Gen.Debug
 import Gen.Maybe
 import Gen.String
 import Iso3166
-import Json.Decode
+import Json.Decode exposing (Decoder)
 import Json.Encode
 import LanguageTag
 import LanguageTag.ExtendedLanguage as ExtendedLanguage
@@ -29,25 +29,84 @@ import String.Extra
 
 main : Program Json.Encode.Value () ()
 main =
-    Generate.fromDirectory
-        (\directory ->
-            case getLocaleData "en" directory of
-                Err e ->
-                    [ errorFile "Error" e ]
+    Platform.worker
+        { init =
+            \flags ->
+                case Json.Decode.decodeValue directoryDecoder flags of
+                    Ok input ->
+                        ( ()
+                        , case getLocaleData "en" input of
+                            Err e ->
+                                Generate.error
+                                    [ { title = "Error getting English data"
+                                      , description = e
+                                      }
+                                    ]
 
-                Ok english ->
-                    let
-                        shared : Shared
-                        shared =
-                            { english = english
-                            , allLocales = allLocales
-                            }
+                            Ok english ->
+                                let
+                                    shared : Shared
+                                    shared =
+                                        { english = english
+                                        , allLocales = allLocales
+                                        }
 
-                        { modulesStatus, languageFiles, allLocales } =
-                            files directory english
-                    in
-                    commonFiles directory shared modulesStatus
-                        ++ languageFiles
+                                    { modulesStatus, languageFiles, allLocales } =
+                                        files input english
+
+                                    common : List Elm.File
+                                    common =
+                                        commonFiles input shared modulesStatus
+                                in
+                                (common ++ languageFiles)
+                                    |> Generate.files
+                        )
+
+                    Err e ->
+                        ( ()
+                        , Generate.error
+                            [ { title = "Error decoding flags"
+                              , description = Json.Decode.errorToString e
+                              }
+                            ]
+                        )
+        , update =
+            \_ model ->
+                ( model, Cmd.none )
+        , subscriptions = \_ -> Sub.none
+        }
+
+
+directoryDecoder : Decoder Directory
+directoryDecoder =
+    Json.Decode.lazy
+        (\_ ->
+            Json.Decode.oneOf
+                [ Json.Decode.map Ok Json.Decode.string
+                , Json.Decode.map Err directoryDecoder
+                ]
+                |> Json.Decode.dict
+                |> Json.Decode.map
+                    (\entries ->
+                        entries
+                            |> Dict.toList
+                            |> List.foldl
+                                (\( name, entry ) ( dirAcc, fileAcc ) ->
+                                    case entry of
+                                        Ok file ->
+                                            ( dirAcc, ( name, file ) :: fileAcc )
+
+                                        Err directory ->
+                                            ( ( name, directory ) :: dirAcc, fileAcc )
+                                )
+                                ( [], [] )
+                            |> (\( dirAcc, fileAcc ) ->
+                                    Directory
+                                        { directories = Dict.fromList dirAcc
+                                        , files = Dict.fromList fileAcc
+                                        }
+                               )
+                    )
         )
 
 
