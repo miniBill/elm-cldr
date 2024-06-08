@@ -181,6 +181,12 @@ commonFiles (Directory directory) shared modulesStatus =
             Dict.get "defaultContent.json" directory.files
                 |> Maybe.andThen
                     (\json ->
+                        let
+                            defaultContentDecoder : Json.Decode.Decoder (List String)
+                            defaultContentDecoder =
+                                Json.Decode.at [ "defaultContent" ]
+                                    (Json.Decode.list Json.Decode.string)
+                        in
                         json
                             |> Json.Decode.decodeString defaultContentDecoder
                             |> Result.toMaybe
@@ -191,32 +197,27 @@ commonFiles (Directory directory) shared modulesStatus =
             Dict.get "likelySubtags.json" directory.files
                 |> Maybe.andThen
                     (\json ->
+                        let
+                            likelySubtagsDecoder : Json.Decode.Decoder (Dict String String)
+                            likelySubtagsDecoder =
+                                Json.Decode.at [ "supplemental", "likelySubtags" ]
+                                    (Json.Decode.dict Json.Decode.string)
+                        in
                         json
                             |> Json.Decode.decodeString likelySubtagsDecoder
                             |> Result.toMaybe
                     )
-
-        defaultContentDecoder : Json.Decode.Decoder (List String)
-        defaultContentDecoder =
-            Json.Decode.at [ "defaultContent" ]
-                (Json.Decode.list Json.Decode.string)
-
-        likelySubtagsDecoder : Json.Decode.Decoder (Dict String String)
-        likelySubtagsDecoder =
-            Json.Decode.at [ "supplemental", "likelySubtags" ]
-                (Json.Decode.dict Json.Decode.string)
     in
     [ localizedFile allLocales modulesStatus
-    , mainFile allLocales { defaultContent = defaultContent, likelySubtags = likelySubtags } modulesStatus
+    , mainFile allLocales { defaultContent = defaultContent, likelySubtags = likelySubtags }
     ]
 
 
-mainFile : List Locale -> { defaultContent : Maybe (List String), likelySubtags : Maybe (Dict String String) } -> Dict ModuleName ModuleStatus -> Elm.File
-mainFile allLocales { defaultContent, likelySubtags } modulesStatus =
+mainFile : List Locale -> { defaultContent : Maybe (List String), likelySubtags : Maybe (Dict String String) } -> Elm.File
+mainFile allLocales { defaultContent, likelySubtags } =
     Elm.file [ "Cldr" ]
         [ countryCodeTypeDeclaration
         , allLocalesDeclaration allLocales
-        , allNontrivialLocalesDeclaration allLocales modulesStatus
         , localeToEnglishNameDeclaration allLocales
         , localeToNativeNameDeclaration allLocales
         , toAlpha2Declaration
@@ -313,29 +314,6 @@ allLocalesDeclaration allLocales =
         |> Elm.list
         |> Elm.declaration "allLocales"
         |> Elm.withDocumentation "All the supported locales."
-        |> Elm.expose
-
-
-allNontrivialLocalesDeclaration : List Locale -> Dict ModuleName ModuleStatus -> Elm.Declaration
-allNontrivialLocalesDeclaration allLocales modulesStatus =
-    allLocales
-        |> List.filterMap
-            (\{ key, moduleName } ->
-                case Dict.get moduleName modulesStatus of
-                    Just { territories } ->
-                        case territories of
-                            Present ->
-                                Just <| Elm.string key
-
-                            Absent _ ->
-                                Nothing
-
-                    Nothing ->
-                        Just <| Gen.Debug.todo <| "Could not find info about locale " ++ key
-            )
-        |> Elm.list
-        |> Elm.declaration "allNontrivialLocales"
-        |> Elm.withDocumentation "All the locales that are not identical to some parent locale."
         |> Elm.expose
 
 
@@ -722,37 +700,6 @@ getParentModule : Dict String String -> ModuleName -> ModuleName
 getParentModule territories moduleName =
     case moduleName of
         [ "Spanish", region ] ->
-            let
-                likeBrazil : List String
-                likeBrazil =
-                    [ "Belize"
-                    , "Cuba"
-                    , "LatinAmerica"
-                    , "Uruguay"
-                    ]
-
-                likeArgentina : List String
-                likeArgentina =
-                    [ "Bolivia"
-                    , "Brazil"
-                    , "Chile"
-                    , "Colombia"
-                    , "CostaRica"
-                    , "DominicanRepublic"
-                    , "Ecuador"
-                    , "ElSalvador"
-                    , "Guatemala"
-                    , "Honduras"
-                    , "Mexico"
-                    , "Nicaragua"
-                    , "Panama"
-                    , "Paraguay"
-                    , "Peru"
-                    , "PuertoRico"
-                    , "UnitedStates"
-                    , "Venezuela"
-                    ]
-            in
             if region == "ElSalvador" then
                 [ "Spanish", "PuertoRico" ]
 
@@ -786,6 +733,38 @@ getParentModule territories moduleName =
                 |> List.reverse
                 |> List.drop 1
                 |> List.reverse
+
+
+likeBrazil : List String
+likeBrazil =
+    [ "Belize"
+    , "Cuba"
+    , "LatinAmerica"
+    , "Uruguay"
+    ]
+
+
+likeArgentina : List String
+likeArgentina =
+    [ "Bolivia"
+    , "Brazil"
+    , "Chile"
+    , "Colombia"
+    , "CostaRica"
+    , "DominicanRepublic"
+    , "Ecuador"
+    , "ElSalvador"
+    , "Guatemala"
+    , "Honduras"
+    , "Mexico"
+    , "Nicaragua"
+    , "Panama"
+    , "Paraguay"
+    , "Peru"
+    , "PuertoRico"
+    , "UnitedStates"
+    , "Venezuela"
+    ]
 
 
 parseLanguageTag :
@@ -1175,6 +1154,11 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
             in
             go parentModuleName
 
+        parentTerritories : Maybe (Dict String String)
+        parentTerritories =
+            parent
+                |> Maybe.map (\{ data } -> data.territories)
+
         branches : List Elm.Case.Branch
         branches =
             allCountryCodes
@@ -1189,9 +1173,9 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
                             |> Maybe.andThen
                                 (\name ->
                                     let
+                                        parentName : Maybe String
                                         parentName =
-                                            parent
-                                                |> Maybe.map (\{ data } -> data.territories)
+                                            parentTerritories
                                                 |> Maybe.andThen (Dict.get countryCodeClean)
                                     in
                                     if Just name == parentName then
@@ -1218,11 +1202,23 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
                 |> String.join "\n"
     in
     if List.isEmpty branches then
-        -- parentFunction
-        --     |> Elm.declaration "countryCodeToName"
-        --     |> Elm.withDocumentation ("Name for `CountryCode` in " ++ fullEnglishName ++ ".\n\nThis is identical to the " ++ parent.fullEnglishName ++ " version.\n\n" ++ table)
-        --     |> Elm.expose
-        Nothing
+        -- Nothing
+        parentFunction
+            |> Elm.declaration "countryCodeToName"
+            |> Elm.withDocumentation
+                ("Name for `CountryCode` in "
+                    ++ fullEnglishName
+                    ++ (case parent of
+                            Nothing ->
+                                ".\n\n"
+
+                            Just pt ->
+                                ".\n\nThis is identical to the " ++ pt.fullEnglishName ++ " version.\n\n"
+                       )
+                    ++ table
+                )
+            |> Elm.expose
+            |> Just
 
     else
         Elm.fn ( "countryCode", Just countryCodeAnnotation )
