@@ -1,6 +1,7 @@
 {
   "devDependencies": {
     "elm-codegen": "../elm-codegen",
+    "elm-pages": "^3.0.15",
     "elm-review": "^2.10.2"
   },
   "author": "miniBill",
