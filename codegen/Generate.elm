@@ -5,8 +5,8 @@ module Generate exposing (main)
 import Dict exposing (Dict)
 import Elm
 import Elm.Annotation as Annotation exposing (Annotation)
+import Elm.Arg
 import Elm.Case
-import Elm.Case.Branch
 import Gen.CodeGen.Generate as Generate exposing (Directory(..))
 import Gen.Debug
 import Gen.Maybe
@@ -240,44 +240,48 @@ likelySubtagsDeclaration allLocales defaultContentMaybe likelySubtagsMaybe =
                     Gen.Debug.todo "Could not parse defaultContent.json"
 
                 ( Just likelySubtags, Just defaultContent ) ->
-                    Elm.Case.string locale
-                        { cases =
-                            allLocales
-                                |> List.filterMap
-                                    (\{ key } ->
-                                        let
-                                            fromLikely () =
-                                                Dict.get key likelySubtags
-                                                    |> Maybe.map
-                                                        (\likelySubtag ->
-                                                            ( key
-                                                            , Gen.Maybe.make_.just <| Elm.string likelySubtag
+                    Elm.Case.custom locale
+                        Annotation.string
+                        ((allLocales
+                            |> List.filterMap
+                                (\{ key } ->
+                                    let
+                                        fromLikely () =
+                                            Dict.get key likelySubtags
+                                                |> Maybe.map
+                                                    (\likelySubtag ->
+                                                        Elm.Case.branch
+                                                            (Elm.Arg.string key)
+                                                            (\_ ->
+                                                                Gen.Maybe.make_.just <|
+                                                                    Elm.string likelySubtag
                                                             )
-                                                        )
-                                        in
-                                        case
-                                            List.filter
-                                                (\line -> String.startsWith (key ++ "-") line)
-                                                defaultContent
-                                        of
-                                            [] ->
-                                                fromLikely ()
+                                                    )
+                                    in
+                                    case
+                                        List.filter
+                                            (\line -> String.startsWith (key ++ "-") line)
+                                            defaultContent
+                                    of
+                                        [] ->
+                                            fromLikely ()
 
-                                            [ likelySubtag ] ->
-                                                ( key
-                                                , Gen.Maybe.make_.just <| Elm.string likelySubtag
-                                                )
-                                                    |> Just
+                                        [ likelySubtag ] ->
+                                            Elm.Case.branch
+                                                (Elm.Arg.string key)
+                                                (\_ -> Gen.Maybe.make_.just <| Elm.string likelySubtag)
+                                                |> Just
 
-                                            _ ->
-                                                fromLikely ()
-                                    )
-                        , otherwise = Gen.Maybe.make_.nothing
-                        }
+                                        _ ->
+                                            fromLikely ()
+                                )
+                         )
+                            ++ [ Elm.Case.branch Elm.Arg.ignore (\_ -> Gen.Maybe.make_.nothing) ]
+                        )
                         |> Elm.withType (Gen.Maybe.annotation_.maybe Annotation.string)
     in
     implementation
-        |> Elm.fn ( "locale", Just Annotation.string )
+        |> Elm.fn (Elm.Arg.varWith "locale" Annotation.string)
         |> Elm.declaration "likelySubtags"
         |> Elm.expose
 
@@ -288,7 +292,7 @@ countryCodeTypeDeclaration =
         |> List.map Elm.variant
         |> Elm.customType "CountryCode"
         |> Elm.withDocumentation "All the supported country codes. `GT` and `LT` are defined in Basics so we define them as `GT_` and `LT_`."
-        |> Elm.exposeWith { exposeConstructor = True, group = Nothing }
+        |> Elm.exposeConstructor
 
 
 allCountryCodesDeclaration : Elm.Declaration
@@ -326,24 +330,32 @@ fromAlpha2Declaration =
 
         implementation : Elm.Expression -> Elm.Expression
         implementation countryCodeExpr =
-            Elm.Case.string (Gen.String.call_.toLower countryCodeExpr)
-                { cases =
-                    allCountryCodes
-                        |> List.map
-                            (\countryCode ->
-                                ( countryCode
+            Elm.Case.custom (Gen.String.call_.toLower countryCodeExpr)
+                Annotation.string
+                ((allCountryCodes
+                    |> List.map
+                        (\countryCode ->
+                            Elm.Case.branch
+                                (countryCode
                                     |> String.replace "_" ""
                                     |> String.toLower
-                                , Elm.val countryCode
-                                    |> Gen.Maybe.make_.just
+                                    |> Elm.Arg.string
                                 )
-                            )
-                , otherwise = Gen.Maybe.make_.nothing
-                }
+                                (\_ ->
+                                    Elm.val countryCode
+                                        |> Gen.Maybe.make_.just
+                                )
+                        )
+                 )
+                    ++ [ Elm.Case.branch
+                            Elm.Arg.ignore
+                            (\_ -> Gen.Maybe.make_.nothing)
+                       ]
+                )
                 |> Elm.withType (Annotation.maybe countryCodeAnnotation)
     in
     implementation
-        |> Elm.fn ( "countryCode", Just Annotation.string )
+        |> Elm.fn (Elm.Arg.varWith "countryCode" Annotation.string)
         |> Elm.declaration "fromAlpha2"
         |> Elm.withDocumentation "`CountryCode` from two-letter `ISO 3166-1 alpha-2`."
         |> Elm.expose
@@ -361,17 +373,19 @@ toAlpha2Declaration =
             allCountryCodes
                 |> List.map
                     (\countryCode ->
-                        Elm.Case.branch0 countryCode
-                            (countryCode
-                                |> String.toLower
-                                |> String.replace "_" ""
-                                |> Elm.string
+                        Elm.Case.branch
+                            (Elm.Arg.customType countryCode ())
+                            (\_ ->
+                                countryCode
+                                    |> String.toLower
+                                    |> String.replace "_" ""
+                                    |> Elm.string
                             )
                     )
                 |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
     in
     implementation
-        |> Elm.fn ( "countryCode", Just countryCodeAnnotation )
+        |> Elm.fn (Elm.Arg.varWith "countryCode" countryCodeAnnotation)
         |> Elm.declaration "toAlpha2"
         |> Elm.withDocumentation "Two-letter `ISO 3166-1 alpha-2` code from `CountryCode`."
         |> Elm.expose
@@ -389,7 +403,7 @@ localeToEnglishNameDeclaration allLocales =
                 }
     in
     implementation
-        |> Elm.fn ( "locale", Just Annotation.string )
+        |> Elm.fn (Elm.Arg.varWith "locale" Annotation.string)
         |> Elm.withType
             (Annotation.function
                 [ Annotation.string ]
@@ -418,7 +432,7 @@ localeToNativeNameDeclaration allLocales =
                 }
     in
     implementation
-        |> Elm.fn ( "locale", Just Annotation.string )
+        |> Elm.fn (Elm.Arg.varWith "locale" Annotation.string)
         |> Elm.withType
             (Annotation.function
                 [ Annotation.string ]
@@ -457,17 +471,16 @@ caseOnLocale allLocales input { case_, otherwise } =
                 case_ locale
                     |> Maybe.map
                         (\expr ->
-                            Elm.Case.Branch.listWithRemaining
-                                { patterns = List.map (\s -> Elm.Case.Branch.string s ()) splat
-                                , gather = \i _ -> i
-                                , startWith = ()
-                                , finally = \_ _ -> expr
-                                , remaining = Elm.Case.Branch.ignore ()
-                                }
+                            Elm.Case.branch
+                                (Elm.Arg.list (\_ _ -> expr)
+                                    |> Elm.Arg.items (List.map Elm.Arg.string splat)
+                                    |> Elm.Arg.listRemaining "rest"
+                                )
+                                identity
                         )
             )
         |> (\cases ->
-                cases ++ [ Elm.Case.Branch.ignore otherwise ]
+                cases ++ [ Elm.Case.branch Elm.Arg.ignore (\_ -> otherwise) ]
            )
         |> Elm.Case.custom
             (Gen.String.call_.split (Elm.string "-") input)
@@ -561,8 +574,8 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
     in
     implementation
         |> Elm.fn2
-            ( "locale", Just Annotation.string )
-            ( "countryCode", Just countryCodeAnnotation )
+            (Elm.Arg.varWith "locale" Annotation.string)
+            (Elm.Arg.varWith "countryCode" countryCodeAnnotation)
         |> Elm.withType
             (Annotation.function
                 [ Annotation.string, countryCodeAnnotation ]
@@ -1182,7 +1195,10 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
                                         Nothing
 
                                     else
-                                        Just <| Elm.Case.branch0 countryCode (Elm.string name)
+                                        Just <|
+                                            Elm.Case.branch
+                                                (Elm.Arg.customType countryCode ())
+                                                (\_ -> Elm.string name)
                                 )
                     )
 
@@ -1221,15 +1237,15 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
             |> Just
 
     else
-        Elm.fn ( "countryCode", Just countryCodeAnnotation )
+        Elm.fn (Elm.Arg.varWith "countryCode" countryCodeAnnotation)
             (\countryCodeExpr ->
                 (if List.length branches == List.length allCountryCodes then
                     branches
 
                  else
                     branches
-                        ++ [ Elm.Case.Branch.ignore
-                                (Elm.apply parentFunction [ countryCodeExpr ])
+                        ++ [ Elm.Case.branch Elm.Arg.ignore
+                                (\_ -> Elm.apply parentFunction [ countryCodeExpr ])
                            ]
                 )
                     |> Elm.Case.custom countryCodeExpr countryCodeAnnotation

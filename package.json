@@ -1,9 +1,17 @@
 {
-  "devDependencies": {
-    "elm-codegen": "../elm-codegen",
-    "elm-pages": "^3.0.15",
-    "elm-review": "^2.10.2"
-  },
-  "author": "miniBill",
-  "license": "BSD-3-Clause"
+    "devDependencies": {
+        "elm-codegen": "^0.6.1",
+        "elm-pages": "^3.0.19",
+        "elm-review": "^2.12.0"
+    },
+    "author": "miniBill",
+    "license": "BSD-3-Clause",
+    "overrides": {
+        "elm-doc-preview": ">=6.0.0",
+        "cross-spawn": ">=7.0.3"
+    },
+    "resolutions": {
+        "elm-doc-preview": ">=6.0.0",
+        "cross-spawn": ">=7.0.3"
+    }
 }
