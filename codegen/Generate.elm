@@ -52,7 +52,7 @@ main =
                                         }
 
                                     { modulesStatus, languageFiles, allLocales } =
-                                        files input english
+                                        generate input english
 
                                     common : List Elm.File
                                     common =
@@ -88,24 +88,22 @@ directoryDecoder =
                 |> Json.Decode.dict
                 |> Json.Decode.map
                     (\entries ->
-                        entries
-                            |> Dict.toList
-                            |> List.foldl
-                                (\( name, entry ) ( dirAcc, fileAcc ) ->
-                                    case entry of
-                                        Ok file ->
-                                            ( dirAcc, ( name, file ) :: fileAcc )
-
-                                        Err directory ->
-                                            ( ( name, directory ) :: dirAcc, fileAcc )
-                                )
-                                ( [], [] )
-                            |> (\( dirAcc, fileAcc ) ->
-                                    Directory
-                                        { directories = Dict.fromList dirAcc
-                                        , files = Dict.fromList fileAcc
+                        Dict.foldl
+                            (\name entry { directories, files } ->
+                                case entry of
+                                    Ok file ->
+                                        { directories = directories
+                                        , files = Dict.insert name file files
                                         }
-                               )
+
+                                    Err directory ->
+                                        { directories = Dict.insert name directory directories
+                                        , files = files
+                                        }
+                            )
+                            { directories = Dict.empty, files = Dict.empty }
+                            entries
+                            |> Directory
                     )
         )
 
@@ -585,7 +583,7 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
         |> Elm.expose
 
 
-files :
+generate :
     Directory
     -> LocaleData
     ->
@@ -593,12 +591,11 @@ files :
         , languageFiles : List Elm.File
         , allLocales : Dict String LocaleData
         }
-files ((Directory dir) as directory) english =
+generate ((Directory dir) as directory) english =
     let
         { allDictionaries, allErrors } =
             dir.directories
-                |> Dict.keys
-                |> List.foldl tryAddDictionary { allDictionaries = Dict.empty, allErrors = [] }
+                |> Dict.foldl (\k _ acc -> tryAddDictionary k acc) { allDictionaries = Dict.empty, allErrors = [] }
 
         { allFiles, modulesStatus, allLocales } =
             allDictionaries
