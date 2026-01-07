@@ -474,7 +474,7 @@ caseOnLocale allLocales input { case_, otherwise } =
                             Elm.Case.branch
                                 (Elm.Arg.list (\_ _ -> expr)
                                     |> Elm.Arg.items (List.map Elm.Arg.string splat)
-                                    |> Elm.Arg.listRemaining "rest"
+                                    |> Elm.Arg.listRemaining "_"
                                 )
                                 identity
                         )
