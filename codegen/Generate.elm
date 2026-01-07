@@ -244,6 +244,7 @@ likelySubtagsDeclaration allLocales defaultContentMaybe likelySubtagsMaybe =
                             |> List.filterMap
                                 (\{ key } ->
                                     let
+                                        fromLikely : () -> Maybe Elm.Case.Branch
                                         fromLikely () =
                                             Dict.get key likelySubtags
                                                 |> Maybe.map
@@ -1145,6 +1146,7 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
         parentFunction : Elm.Expression
         parentFunction =
             let
+                go : List String -> Elm.Expression
                 go name =
                     case Dict.get name modulesStatus of
                         Nothing ->
