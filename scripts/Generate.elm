@@ -31,6 +31,7 @@ import LanguageTag.Script as Script exposing (Script)
 import LanguageTag.Variant as Variant exposing (Variant)
 import List.Extra
 import Pages.Script
+import Result.Extra
 import Set exposing (Set)
 import String.Extra
 
@@ -59,10 +60,10 @@ config =
 toTask : Config -> BackendTask FatalError ()
 toTask { flagsFrom, output } =
     buildDirectory flagsFrom
-        |> BackendTask.andThen main
+        |> BackendTask.andThen (writeFiles output)
 
 
-buildDirectory : String -> BackendTask FatalError (Dict String String)
+buildDirectory : String -> BackendTask FatalError (Dict (List String) String)
 buildDirectory path =
     Glob.succeed Tuple.pair
         |> Glob.match
@@ -96,8 +97,8 @@ buildDirectory path =
             )
 
 
-main : Dict String String -> BackendTask FatalError ()
-main input =
+writeFiles : String -> Dict (List String) String -> BackendTask FatalError ()
+writeFiles output input =
     case getLocaleData "en" input of
         Ok english ->
             let
@@ -110,21 +111,27 @@ main input =
                 { modulesStatus, languageFiles, allLocales } =
                     generate english input
 
-                common : List Elm.File
+                common : Result String (List Elm.File)
                 common =
                     commonFiles input shared modulesStatus
             in
-            (common ++ languageFiles)
-                |> List.map
-                    (\file ->
-                        Pages.Script.writeFile
-                            { path = file.path
-                            , body = file.contents
-                            }
-                            |> BackendTask.allowFatal
+            Result.map2 (++) common (Ok languageFiles)
+                |> Result.mapError FatalError.fromString
+                |> BackendTask.fromResult
+                |> BackendTask.andThen
+                    (\files ->
+                        files
+                            |> List.map
+                                (\file ->
+                                    Pages.Script.writeFile
+                                        { path = output ++ "/" ++ file.path
+                                        , body = file.contents
+                                        }
+                                        |> BackendTask.allowFatal
+                                )
+                            |> BackendTask.sequence
+                            |> BackendTask.map (\_ -> ())
                     )
-                |> BackendTask.sequence
-                |> BackendTask.map (\_ -> ())
 
         Err e ->
             e |> FatalError.fromString |> BackendTask.fail
@@ -175,31 +182,43 @@ type DictStatus
     | Absent ModuleName
 
 
-commonFiles : Dict String String -> Shared -> Dict ModuleName ModuleStatus -> List Elm.File
+commonFiles : Dict (List String) String -> Shared -> Dict ModuleName ModuleStatus -> Result String (List Elm.File)
 commonFiles files shared modulesStatus =
     let
-        allLocales : List Locale
+        allLocales : Result String (List Locale)
         allLocales =
             files
                 |> Dict.keys
-                |> List.filterMap
-                    (\key ->
-                        case parseLanguageTag shared key of
-                            Ok { fullEnglishName, fullNativeName, moduleName } ->
-                                { key = key
-                                , fullEnglishName = fullEnglishName
-                                , fullNativeName = fullNativeName
-                                , moduleName = moduleName
-                                }
-                                    |> Just
+                |> Result.Extra.foldlWhileOk
+                    (\k acc ->
+                        case k of
+                            [ key ] ->
+                                if String.endsWith ".json" key then
+                                    Ok acc
 
-                            Err e ->
-                                Debug.todo (Debug.toString e)
+                                else
+                                    case parseLanguageTag shared key of
+                                        Ok { fullEnglishName, fullNativeName, moduleName } ->
+                                            Ok
+                                                ({ key = key
+                                                 , fullEnglishName = fullEnglishName
+                                                 , fullNativeName = fullNativeName
+                                                 , moduleName = moduleName
+                                                 }
+                                                    :: acc
+                                                )
+
+                                        Err e ->
+                                            Err e
+
+                            _ ->
+                                Ok acc
                     )
+                    []
 
         defaultContent : Maybe (List String)
         defaultContent =
-            Dict.get "defaultContent.json" files
+            Dict.get [ "defaultContent.json" ] files
                 |> Maybe.andThen
                     (\json ->
                         let
@@ -215,7 +234,7 @@ commonFiles files shared modulesStatus =
 
         likelySubtags : Maybe (Dict String String)
         likelySubtags =
-            Dict.get "likelySubtags.json" files
+            Dict.get [ "likelySubtags.json" ] files
                 |> Maybe.andThen
                     (\json ->
                         let
@@ -229,83 +248,90 @@ commonFiles files shared modulesStatus =
                             |> Result.toMaybe
                     )
     in
-    [ localizedFile allLocales modulesStatus
-    , mainFile allLocales { defaultContent = defaultContent, likelySubtags = likelySubtags }
-    ]
+    allLocales
+        |> Result.andThen
+            (\all ->
+                Result.Extra.combine
+                    [ Ok (localizedFile all modulesStatus)
+                    , mainFile all { defaultContent = defaultContent, likelySubtags = likelySubtags }
+                    ]
+            )
 
 
-mainFile : List Locale -> { defaultContent : Maybe (List String), likelySubtags : Maybe (Dict String String) } -> Elm.File
+mainFile : List Locale -> { defaultContent : Maybe (List String), likelySubtags : Maybe (Dict String String) } -> Result String Elm.File
 mainFile allLocales { defaultContent, likelySubtags } =
-    Elm.file [ "Cldr" ]
-        [ countryCodeTypeDeclaration
-        , allLocalesDeclaration allLocales
-        , localeToEnglishNameDeclaration allLocales
-        , localeToNativeNameDeclaration allLocales
-        , toAlpha2Declaration
-        , fromAlpha2Declaration
-        , allCountryCodesDeclaration
-        , likelySubtagsDeclaration allLocales defaultContent likelySubtags
-        ]
+    Result.map
+        (\likelySubtagsDeclaration ->
+            Elm.file [ "Cldr" ]
+                [ countryCodeTypeDeclaration
+                , allLocalesDeclaration allLocales
+                , localeToEnglishNameDeclaration allLocales
+                , localeToNativeNameDeclaration allLocales
+                , toAlpha2Declaration
+                , fromAlpha2Declaration
+                , allCountryCodesDeclaration
+                , likelySubtagsDeclaration
+                ]
+        )
+        (toLikelySubtagsDeclaration allLocales defaultContent likelySubtags)
 
 
-likelySubtagsDeclaration : List Locale -> Maybe (List String) -> Maybe (Dict String String) -> Elm.Declaration
-likelySubtagsDeclaration allLocales defaultContentMaybe likelySubtagsMaybe =
-    let
-        implementation : Elm.Expression -> Elm.Expression
-        implementation locale =
-            case ( likelySubtagsMaybe, defaultContentMaybe ) of
-                ( Nothing, _ ) ->
-                    Gen.Debug.todo "Could not parse likelySubtags.json"
+toLikelySubtagsDeclaration : List Locale -> Maybe (List String) -> Maybe (Dict String String) -> Result String Elm.Declaration
+toLikelySubtagsDeclaration allLocales defaultContentMaybe likelySubtagsMaybe =
+    case ( likelySubtagsMaybe, defaultContentMaybe ) of
+        ( Nothing, _ ) ->
+            Err "Could not parse likelySubtags.json"
 
-                ( _, Nothing ) ->
-                    Gen.Debug.todo "Could not parse defaultContent.json"
+        ( _, Nothing ) ->
+            Err "Could not parse defaultContent.json"
 
-                ( Just likelySubtags, Just defaultContent ) ->
-                    Elm.Case.custom locale
-                        Annotation.string
-                        ((allLocales
-                            |> List.filterMap
-                                (\{ key } ->
-                                    let
-                                        fromLikely : () -> Maybe Elm.Case.Branch
-                                        fromLikely () =
-                                            Dict.get key likelySubtags
-                                                |> Maybe.map
-                                                    (\likelySubtag ->
-                                                        Elm.Case.branch
-                                                            (Elm.Arg.string key)
-                                                            (\_ ->
-                                                                Gen.Maybe.make_.just <|
-                                                                    Elm.string likelySubtag
-                                                            )
-                                                    )
-                                    in
-                                    case
-                                        List.filter
-                                            (\line -> String.startsWith (key ++ "-") line)
-                                            defaultContent
-                                    of
-                                        [] ->
-                                            fromLikely ()
+        ( Just likelySubtags, Just defaultContent ) ->
+            (\locale ->
+                Elm.Case.custom locale
+                    Annotation.string
+                    ((allLocales
+                        |> List.filterMap
+                            (\{ key } ->
+                                let
+                                    fromLikely : () -> Maybe Elm.Case.Branch
+                                    fromLikely () =
+                                        Dict.get key likelySubtags
+                                            |> Maybe.map
+                                                (\likelySubtag ->
+                                                    Elm.Case.branch
+                                                        (Elm.Arg.string key)
+                                                        (\_ ->
+                                                            Gen.Maybe.make_.just <|
+                                                                Elm.string likelySubtag
+                                                        )
+                                                )
+                                in
+                                case
+                                    List.filter
+                                        (\line -> String.startsWith (key ++ "-") line)
+                                        defaultContent
+                                of
+                                    [] ->
+                                        fromLikely ()
 
-                                        [ likelySubtag ] ->
-                                            Elm.Case.branch
-                                                (Elm.Arg.string key)
-                                                (\_ -> Gen.Maybe.make_.just <| Elm.string likelySubtag)
-                                                |> Just
+                                    [ likelySubtag ] ->
+                                        Elm.Case.branch
+                                            (Elm.Arg.string key)
+                                            (\_ -> Gen.Maybe.make_.just <| Elm.string likelySubtag)
+                                            |> Just
 
-                                        _ ->
-                                            fromLikely ()
-                                )
-                         )
-                            ++ [ Elm.Case.branch Elm.Arg.ignore (\_ -> Gen.Maybe.make_.nothing) ]
-                        )
-                        |> Elm.withType (Gen.Maybe.annotation_.maybe Annotation.string)
-    in
-    implementation
-        |> Elm.fn (Elm.Arg.varWith "locale" Annotation.string)
-        |> Elm.declaration "likelySubtags"
-        |> Elm.expose
+                                    _ ->
+                                        fromLikely ()
+                            )
+                     )
+                        ++ [ Elm.Case.branch Elm.Arg.ignore (\_ -> Gen.Maybe.make_.nothing) ]
+                    )
+                    |> Elm.withType (Gen.Maybe.annotation_.maybe Annotation.string)
+            )
+                |> Elm.fn (Elm.Arg.varWith "locale" Annotation.string)
+                |> Elm.declaration "likelySubtags"
+                |> Elm.expose
+                |> Ok
 
 
 countryCodeTypeDeclaration : Elm.Declaration
@@ -609,7 +635,7 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
 
 generate :
     LocaleData
-    -> Dict String String
+    -> Dict (List String) String
     ->
         { modulesStatus : Dict ModuleName ModuleStatus
         , languageFiles : List Elm.File
@@ -619,7 +645,20 @@ generate english files =
     let
         { allDictionaries, allErrors } =
             files
-                |> Dict.foldl (\k _ acc -> tryAddDictionary k acc) { allDictionaries = Dict.empty, allErrors = [] }
+                |> Dict.foldl
+                    (\k _ acc ->
+                        case k of
+                            [ key ] ->
+                                if String.endsWith ".json" key then
+                                    acc
+
+                                else
+                                    tryAddDictionary key acc
+
+                            _ ->
+                                acc
+                    )
+                    { allDictionaries = Dict.empty, allErrors = [] }
 
         { allFiles, modulesStatus, allLocales } =
             allDictionaries
@@ -1017,8 +1056,8 @@ scriptToString localeData script =
             Ok name
 
 
-getLocaleData : String -> Dict String String -> Result String LocaleData
-getLocaleData key directory =
+getLocaleData : String -> Dict (List String) String -> Result String LocaleData
+getLocaleData key files =
     Result.map4
         (\languages territories scripts variants ->
             { key = key
@@ -1040,14 +1079,14 @@ getLocaleData key directory =
             , variants = variants
             }
         )
-        (getFile key "languages" directory)
-        (getTerritories key directory)
-        (getFile key "scripts" directory)
-        (getVariants key directory)
+        (getFile key "languages" files)
+        (getTerritories key files)
+        (getFile key "scripts" files)
+        (getVariants key files)
 
 
-getTerritories : String -> Dict String String -> Result String (Dict String String)
-getTerritories key directory =
+getTerritories : String -> Dict (List String) String -> Result String (Dict String String)
+getTerritories key files =
     let
         fixup : Dict String String -> Dict String String
         fixup dict =
@@ -1077,12 +1116,12 @@ getTerritories key directory =
                 Just v ->
                     Dict.insert to v dict
     in
-    getFile key "territories" directory
+    getFile key "territories" files
         |> Result.map fixup
 
 
-getVariants : String -> Dict String String -> Result String (Dict String String)
-getVariants key directory =
+getVariants : String -> Dict (List String) String -> Result String (Dict String String)
+getVariants key files =
     let
         fixup : Dict String v -> Dict String v
         fixup dict =
@@ -1093,19 +1132,19 @@ getVariants key directory =
                 Dict.empty
                 dict
     in
-    getFile key "variants" directory
+    getFile key "variants" files
         |> Result.map fixup
         -- Some locales don't have a variants.json file
         |> Result.withDefault Dict.empty
         |> Ok
 
 
-getFile : String -> String -> Dict String String -> Result String (Dict String String)
+getFile : String -> String -> Dict (List String) String -> Result String (Dict String String)
 getFile key fileName files =
     let
-        fullPath : String
+        fullPath : List String
         fullPath =
-            key ++ "/" ++ fileName ++ ".json"
+            [ key, fileName ++ ".json" ]
     in
     case Dict.get fullPath files of
         Just json ->
@@ -1121,11 +1160,11 @@ getFile key fileName files =
                 json
                 |> Result.mapError
                     (\e ->
-                        "\"" ++ fullPath ++ ".json\": decoding failed: " ++ Json.Decode.errorToString e
+                        "\"" ++ String.join "/" fullPath ++ "\": decoding failed: " ++ Json.Decode.errorToString e
                     )
 
         Nothing ->
-            Err <| "Could not find \"" ++ fullPath ++ ".json\""
+            Err <| "Could not find \"" ++ String.join "/" fullPath ++ "\""
 
 
 allCountryCodes : List String
@@ -1166,14 +1205,14 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
         countryCodeAnnotation =
             Annotation.namedWith [ "Cldr" ] "CountryCode" []
 
-        parentFunction : Elm.Expression
+        parentFunction : Result String Elm.Expression
         parentFunction =
             let
-                go : List String -> Elm.Expression
+                go : List String -> Result String Elm.Expression
                 go name =
                     case Dict.get name modulesStatus of
                         Nothing ->
-                            Gen.Debug.todo ("Could not find module info for " ++ String.join "." name)
+                            Err ("Could not find module info for " ++ String.join "." name)
 
                         Just status ->
                             case status.territories of
@@ -1183,6 +1222,7 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
                                         , name = "countryCodeToName"
                                         , annotation = Just <| Annotation.function [ countryCodeAnnotation ] Annotation.string
                                         }
+                                        |> Ok
 
                                 Absent absent ->
                                     go absent
