@@ -1,13 +1,20 @@
-module Generate exposing (main)
+module Generate exposing (run)
 
 {-| -}
 
+import BackendTask exposing (BackendTask)
+import BackendTask.Do as Do
+import BackendTask.File as File
+import BackendTask.Glob as Glob
+import Cli.Option
+import Cli.OptionsParser
+import Cli.Program as Program
 import Dict exposing (Dict)
 import Elm
 import Elm.Annotation as Annotation exposing (Annotation)
 import Elm.Arg
 import Elm.Case
-import Gen.CodeGen.Generate as Generate exposing (Directory(..))
+import FatalError exposing (FatalError)
 import Gen.Debug
 import Gen.Maybe
 import Gen.String
@@ -23,89 +30,104 @@ import LanguageTag.Region as Region exposing (Region)
 import LanguageTag.Script as Script exposing (Script)
 import LanguageTag.Variant as Variant exposing (Variant)
 import List.Extra
+import Pages.Script
 import Set exposing (Set)
 import String.Extra
 
 
-main : Program Json.Encode.Value () ()
-main =
-    Platform.worker
-        { init =
-            \flags ->
-                case Json.Decode.decodeValue directoryDecoder flags of
-                    Ok input ->
-                        ( ()
-                        , case getLocaleData "en" input of
-                            Err e ->
-                                Generate.error
-                                    [ { title = "Error getting English data"
-                                      , description = e
-                                      }
-                                    ]
+run : Pages.Script.Script
+run =
+    Pages.Script.withCliOptions config toTask
 
-                            Ok english ->
-                                let
-                                    shared : Shared
-                                    shared =
-                                        { english = english
-                                        , allLocales = allLocales
-                                        }
 
-                                    { modulesStatus, languageFiles, allLocales } =
-                                        generate input english
+type alias Config =
+    { flagsFrom : String
+    , output : String
+    }
 
-                                    common : List Elm.File
-                                    common =
-                                        commonFiles input shared modulesStatus
-                                in
-                                (common ++ languageFiles)
-                                    |> Generate.files
+
+config : Program.Config Config
+config =
+    Program.config
+        |> Program.add
+            (Cli.OptionsParser.build Config
+                |> Cli.OptionsParser.with (Cli.Option.requiredKeywordArg "flags-from")
+                |> Cli.OptionsParser.with (Cli.Option.requiredKeywordArg "output")
+            )
+
+
+toTask : Config -> BackendTask FatalError ()
+toTask { flagsFrom, output } =
+    buildDirectory flagsFrom
+        |> BackendTask.andThen main
+
+
+buildDirectory : String -> BackendTask FatalError (Dict String String)
+buildDirectory path =
+    Glob.succeed Tuple.pair
+        |> Glob.match
+            (Glob.literal
+                (if String.endsWith "/" path then
+                    path
+
+                 else
+                    path ++ "/"
+                )
+            )
+        |> Glob.capture Glob.recursiveWildcard
+        |> Glob.captureStats
+        |> Glob.toBackendTask
+        |> BackendTask.andThen
+            (\fileList ->
+                fileList
+                    |> List.filterMap
+                        (\( key, stats ) ->
+                            if stats.isDirectory then
+                                Nothing
+
+                            else
+                                File.rawFile stats.fullPath
+                                    |> BackendTask.allowFatal
+                                    |> BackendTask.map (Tuple.pair key)
+                                    |> Just
                         )
-
-                    Err e ->
-                        ( ()
-                        , Generate.error
-                            [ { title = "Error decoding flags"
-                              , description = Json.Decode.errorToString e
-                              }
-                            ]
-                        )
-        , update =
-            \_ model ->
-                ( model, Cmd.none )
-        , subscriptions = \_ -> Sub.none
-        }
+                    |> BackendTask.combine
+                    |> BackendTask.map Dict.fromList
+            )
 
 
-directoryDecoder : Decoder Directory
-directoryDecoder =
-    Json.Decode.lazy
-        (\_ ->
-            Json.Decode.oneOf
-                [ Json.Decode.map Ok Json.Decode.string
-                , Json.Decode.map Err directoryDecoder
-                ]
-                |> Json.Decode.dict
-                |> Json.Decode.map
-                    (\entries ->
-                        Dict.foldl
-                            (\name entry { directories, files } ->
-                                case entry of
-                                    Ok file ->
-                                        { directories = directories
-                                        , files = Dict.insert name file files
-                                        }
+main : Dict String String -> BackendTask FatalError ()
+main input =
+    case getLocaleData "en" input of
+        Ok english ->
+            let
+                shared : Shared
+                shared =
+                    { english = english
+                    , allLocales = allLocales
+                    }
 
-                                    Err directory ->
-                                        { directories = Dict.insert name directory directories
-                                        , files = files
-                                        }
-                            )
-                            { directories = Dict.empty, files = Dict.empty }
-                            entries
-                            |> Directory
+                { modulesStatus, languageFiles, allLocales } =
+                    generate english input
+
+                common : List Elm.File
+                common =
+                    commonFiles input shared modulesStatus
+            in
+            (common ++ languageFiles)
+                |> List.map
+                    (\file ->
+                        Pages.Script.writeFile
+                            { path = file.path
+                            , body = file.contents
+                            }
+                            |> BackendTask.allowFatal
                     )
-        )
+                |> BackendTask.sequence
+                |> BackendTask.map (\_ -> ())
+
+        Err e ->
+            e |> FatalError.fromString |> BackendTask.fail
 
 
 type alias Shared =
@@ -153,30 +175,31 @@ type DictStatus
     | Absent ModuleName
 
 
-commonFiles : Directory -> Shared -> Dict ModuleName ModuleStatus -> List Elm.File
-commonFiles (Directory directory) shared modulesStatus =
+commonFiles : Dict String String -> Shared -> Dict ModuleName ModuleStatus -> List Elm.File
+commonFiles files shared modulesStatus =
     let
         allLocales : List Locale
         allLocales =
-            directory.directories
+            files
                 |> Dict.keys
                 |> List.filterMap
                     (\key ->
-                        parseLanguageTag shared key
-                            |> Result.toMaybe
-                            |> Maybe.map
-                                (\{ fullEnglishName, fullNativeName, moduleName } ->
-                                    { key = key
-                                    , fullEnglishName = fullEnglishName
-                                    , fullNativeName = fullNativeName
-                                    , moduleName = moduleName
-                                    }
-                                )
+                        case parseLanguageTag shared key of
+                            Ok { fullEnglishName, fullNativeName, moduleName } ->
+                                { key = key
+                                , fullEnglishName = fullEnglishName
+                                , fullNativeName = fullNativeName
+                                , moduleName = moduleName
+                                }
+                                    |> Just
+
+                            Err e ->
+                                Debug.todo (Debug.toString e)
                     )
 
         defaultContent : Maybe (List String)
         defaultContent =
-            Dict.get "defaultContent.json" directory.files
+            Dict.get "defaultContent.json" files
                 |> Maybe.andThen
                     (\json ->
                         let
@@ -192,7 +215,7 @@ commonFiles (Directory directory) shared modulesStatus =
 
         likelySubtags : Maybe (Dict String String)
         likelySubtags =
-            Dict.get "likelySubtags.json" directory.files
+            Dict.get "likelySubtags.json" files
                 |> Maybe.andThen
                     (\json ->
                         let
@@ -585,17 +608,17 @@ localizedCountryCodeToNameDeclaration allLocales modulesStatus =
 
 
 generate :
-    Directory
-    -> LocaleData
+    LocaleData
+    -> Dict String String
     ->
         { modulesStatus : Dict ModuleName ModuleStatus
         , languageFiles : List Elm.File
         , allLocales : Dict String LocaleData
         }
-generate ((Directory dir) as directory) english =
+generate english files =
     let
         { allDictionaries, allErrors } =
-            dir.directories
+            files
                 |> Dict.foldl (\k _ acc -> tryAddDictionary k acc) { allDictionaries = Dict.empty, allErrors = [] }
 
         { allFiles, modulesStatus, allLocales } =
@@ -669,7 +692,7 @@ generate ((Directory dir) as directory) english =
         tryAddDictionary key acc =
             case parseLanguageTag { english = english, allLocales = Dict.empty } key of
                 Ok { fullEnglishName, moduleName } ->
-                    case getLocaleData key directory of
+                    case getLocaleData key files of
                         Ok data ->
                             { acc
                                 | allDictionaries =
@@ -994,7 +1017,7 @@ scriptToString localeData script =
             Ok name
 
 
-getLocaleData : String -> Directory -> Result String LocaleData
+getLocaleData : String -> Dict String String -> Result String LocaleData
 getLocaleData key directory =
     Result.map4
         (\languages territories scripts variants ->
@@ -1017,13 +1040,13 @@ getLocaleData key directory =
             , variants = variants
             }
         )
-        (getFile "languages" key directory)
+        (getFile key "languages" directory)
         (getTerritories key directory)
-        (getFile "scripts" key directory)
+        (getFile key "scripts" directory)
         (getVariants key directory)
 
 
-getTerritories : String -> Directory -> Result String (Dict String String)
+getTerritories : String -> Dict String String -> Result String (Dict String String)
 getTerritories key directory =
     let
         fixup : Dict String String -> Dict String String
@@ -1054,11 +1077,11 @@ getTerritories key directory =
                 Just v ->
                     Dict.insert to v dict
     in
-    getFile "territories" key directory
+    getFile key "territories" directory
         |> Result.map fixup
 
 
-getVariants : String -> Directory -> Result String (Dict String String)
+getVariants : String -> Dict String String -> Result String (Dict String String)
 getVariants key directory =
     let
         fixup : Dict String v -> Dict String v
@@ -1070,39 +1093,39 @@ getVariants key directory =
                 Dict.empty
                 dict
     in
-    getFile "variants" key directory
+    getFile key "variants" directory
         |> Result.map fixup
         -- Some locales don't have a variants.json file
         |> Result.withDefault Dict.empty
         |> Ok
 
 
-getFile : String -> String -> Directory -> Result String (Dict String String)
-getFile fileName key (Directory directory) =
-    case Dict.get key directory.directories of
-        Just (Directory subdirectory) ->
-            case Dict.get (fileName ++ ".json") subdirectory.files of
-                Just json ->
-                    Json.Decode.decodeString
-                        (Json.Decode.at
-                            [ "main"
-                            , key
-                            , "localeDisplayNames"
-                            , fileName
-                            ]
-                            (Json.Decode.dict Json.Decode.string)
-                        )
-                        json
-                        |> Result.mapError
-                            (\e ->
-                                "\"" ++ fileName ++ ".json\": decoding failed: " ++ Json.Decode.errorToString e
-                            )
-
-                Nothing ->
-                    Err <| "Could not find \"" ++ fileName ++ ".json\""
+getFile : String -> String -> Dict String String -> Result String (Dict String String)
+getFile key fileName files =
+    let
+        fullPath : String
+        fullPath =
+            key ++ "/" ++ fileName ++ ".json"
+    in
+    case Dict.get fullPath files of
+        Just json ->
+            Json.Decode.decodeString
+                (Json.Decode.at
+                    [ "main"
+                    , key
+                    , "localeDisplayNames"
+                    , fileName
+                    ]
+                    (Json.Decode.dict Json.Decode.string)
+                )
+                json
+                |> Result.mapError
+                    (\e ->
+                        "\"" ++ fullPath ++ ".json\": decoding failed: " ++ Json.Decode.errorToString e
+                    )
 
         Nothing ->
-            Err <| "Could not find directory \"" ++ key ++ "\""
+            Err <| "Could not find \"" ++ fullPath ++ ".json\""
 
 
 allCountryCodes : List String
