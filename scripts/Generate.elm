@@ -101,21 +101,22 @@ writeFiles : String -> Dict (List String) String -> BackendTask FatalError ()
 writeFiles output input =
     case getLocaleData "en" input of
         Ok english ->
-            let
-                shared : Shared
-                shared =
-                    { english = english
-                    , allLocales = allLocales
-                    }
+            generate english input
+                |> Result.andThen
+                    (\{ modulesStatus, languageFiles, allLocales } ->
+                        let
+                            shared : Shared
+                            shared =
+                                { english = english
+                                , allLocales = allLocales
+                                }
 
-                { modulesStatus, languageFiles, allLocales } =
-                    generate english input
-
-                common : Result String (List Elm.File)
-                common =
-                    commonFiles input shared modulesStatus
-            in
-            Result.map2 (++) common (Ok languageFiles)
+                            common : Result String (List Elm.File)
+                            common =
+                                commonFiles input shared modulesStatus
+                        in
+                        Result.map2 (++) common (Ok languageFiles)
+                    )
                 |> Result.mapError FatalError.fromString
                 |> BackendTask.fromResult
                 |> BackendTask.andThen
@@ -637,10 +638,12 @@ generate :
     LocaleData
     -> Dict (List String) String
     ->
-        { modulesStatus : Dict ModuleName ModuleStatus
-        , languageFiles : List Elm.File
-        , allLocales : Dict String LocaleData
-        }
+        Result
+            String
+            { modulesStatus : Dict ModuleName ModuleStatus
+            , languageFiles : List Elm.File
+            , allLocales : Dict String LocaleData
+            }
 generate english files =
     let
         { allDictionaries, allErrors } =
@@ -660,7 +663,7 @@ generate english files =
                     )
                     { allDictionaries = Dict.empty, allErrors = [] }
 
-        { allFiles, modulesStatus, allLocales } =
+        foldResult =
             allDictionaries
                 |> Dict.toList
                 |> List.sortBy
@@ -669,7 +672,7 @@ generate english files =
                         , List.length (getParentModule data.territories moduleName)
                         )
                     )
-                |> List.foldl
+                |> Result.Extra.foldlWhileOk
                     (\( moduleName, { fullEnglishName, data } ) acc ->
                         let
                             parentModuleName : ModuleName
@@ -693,7 +696,7 @@ generate english files =
                                 }
                                 acc.modulesStatus
                         of
-                            Just declaration ->
+                            Ok (Just declaration) ->
                                 { acc
                                     | allFiles =
                                         Elm.file ("Cldr" :: moduleName)
@@ -706,8 +709,9 @@ generate english files =
                                             acc.modulesStatus
                                     , allLocales = Dict.insert data.key data acc.allLocales
                                 }
+                                    |> Ok
 
-                            Nothing ->
+                            Ok Nothing ->
                                 { acc
                                     | modulesStatus =
                                         Dict.insert moduleName
@@ -715,6 +719,10 @@ generate english files =
                                             acc.modulesStatus
                                     , allLocales = Dict.insert data.key data acc.allLocales
                                 }
+                                    |> Ok
+
+                            Err e ->
+                                Err e
                     )
                     { allFiles = [], modulesStatus = Dict.empty, allLocales = Dict.empty }
 
@@ -763,10 +771,14 @@ generate english files =
                         in
                         { acc | allErrors = errorFile key msg :: acc.allErrors }
     in
-    { modulesStatus = modulesStatus
-    , languageFiles = allErrors ++ allFiles
-    , allLocales = allLocales
-    }
+    foldResult
+        |> Result.map
+            (\{ allFiles, modulesStatus, allLocales } ->
+                { modulesStatus = modulesStatus
+                , languageFiles = allErrors ++ allFiles
+                , allLocales = allLocales
+                }
+            )
 
 
 getParentModule : Dict String String -> ModuleName -> ModuleName
@@ -1198,7 +1210,7 @@ countryCodeToNameDeclaration :
         , territories : Dict String String
         }
     -> Dict ModuleName ModuleStatus
-    -> Maybe Elm.Declaration
+    -> Result String (Maybe Elm.Declaration)
 countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, territories } modulesStatus =
     let
         countryCodeAnnotation : Annotation
@@ -1282,40 +1294,48 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
     if List.isEmpty branches then
         -- Nothing
         parentFunction
-            |> Elm.declaration "countryCodeToName"
-            |> Elm.withDocumentation
-                ("Name for `CountryCode` in "
-                    ++ fullEnglishName
-                    ++ (case parent of
-                            Nothing ->
-                                ".\n\n"
+            |> Result.map
+                (\f ->
+                    f
+                        |> Elm.declaration "countryCodeToName"
+                        |> Elm.withDocumentation
+                            ("Name for `CountryCode` in "
+                                ++ fullEnglishName
+                                ++ (case parent of
+                                        Nothing ->
+                                            ".\n\n"
 
-                            Just pt ->
-                                ".\n\nThis is identical to the " ++ pt.fullEnglishName ++ " version.\n\n"
-                       )
-                    ++ table
+                                        Just pt ->
+                                            ".\n\nThis is identical to the " ++ pt.fullEnglishName ++ " version.\n\n"
+                                   )
+                                ++ table
+                            )
+                        |> Elm.expose
+                        |> Just
                 )
-            |> Elm.expose
-            |> Just
 
     else
-        Elm.fn (Elm.Arg.varWith "countryCode" countryCodeAnnotation)
-            (\countryCodeExpr ->
-                (if List.length branches == List.length allCountryCodes then
-                    branches
+        parentFunction
+            |> Result.map
+                (\f ->
+                    Elm.fn (Elm.Arg.varWith "countryCode" countryCodeAnnotation)
+                        (\countryCodeExpr ->
+                            (if List.length branches == List.length allCountryCodes then
+                                branches
 
-                 else
-                    branches
-                        ++ [ Elm.Case.branch Elm.Arg.ignore
-                                (\_ -> Elm.apply parentFunction [ countryCodeExpr ])
-                           ]
+                             else
+                                branches
+                                    ++ [ Elm.Case.branch Elm.Arg.ignore
+                                            (\_ -> Elm.apply f [ countryCodeExpr ])
+                                       ]
+                            )
+                                |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
+                        )
+                        |> Elm.declaration "countryCodeToName"
+                        |> Elm.withDocumentation ("Name for `CountryCode` in " ++ fullEnglishName ++ ".\n\n" ++ table)
+                        |> Elm.expose
+                        |> Just
                 )
-                    |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
-            )
-            |> Elm.declaration "countryCodeToName"
-            |> Elm.withDocumentation ("Name for `CountryCode` in " ++ fullEnglishName ++ ".\n\n" ++ table)
-            |> Elm.expose
-            |> Just
 
 
 cleanName : String -> String
