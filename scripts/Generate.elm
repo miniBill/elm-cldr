@@ -787,27 +787,38 @@ generate english files =
                     |> List.sortBy
                         (\( moduleName, { data } ) ->
                             ( List.length moduleName
-                            , List.length (getParentModule data.territories moduleName)
+                            , List.length (Maybe.withDefault [] (getParentModule data.territories moduleName))
                             )
                         )
                     |> Result.Extra.foldlWhileOk
                         (\( moduleName, { fullEnglishName, data } ) acc ->
                             let
-                                parentModuleName : ModuleName
+                                parentModuleName : Maybe ModuleName
                                 parentModuleName =
                                     getParentModule data.territories moduleName
 
                                 parent :
                                     Maybe
-                                        { fullEnglishName : String
+                                        { moduleName : List String
+                                        , fullEnglishName : String
                                         , data : LocaleData
                                         }
                                 parent =
-                                    Dict.get parentModuleName allDictionaries
+                                    parentModuleName
+                                        |> Maybe.andThen
+                                            (\name ->
+                                                Dict.get name allDictionaries
+                                                    |> Maybe.map
+                                                        (\p ->
+                                                            { moduleName = name
+                                                            , fullEnglishName = p.fullEnglishName
+                                                            , data = p.data
+                                                            }
+                                                        )
+                                            )
                             in
                             case
                                 countryCodeToNameDeclaration
-                                    { parentModuleName = parentModuleName }
                                     parent
                                     { fullEnglishName = fullEnglishName
                                     , territories = data.territories
@@ -832,9 +843,14 @@ generate english files =
                                 Ok Nothing ->
                                     { acc
                                         | modulesStatus =
-                                            Dict.insert moduleName
-                                                { territories = Absent parentModuleName }
-                                                acc.modulesStatus
+                                            case parentModuleName of
+                                                Nothing ->
+                                                    acc.modulesStatus
+
+                                                Just name ->
+                                                    Dict.insert moduleName
+                                                        { territories = Absent name }
+                                                        acc.modulesStatus
                                         , allLocales = Dict.insert data.key data acc.allLocales
                                     }
                                         |> Ok
@@ -846,43 +862,47 @@ generate english files =
             )
 
 
-getParentModule : Dict String String -> ModuleName -> ModuleName
+getParentModule : Dict String String -> ModuleName -> Maybe ModuleName
 getParentModule territories moduleName =
     case moduleName of
         [ "Spanish", region ] ->
             if region == "ElSalvador" then
-                [ "Spanish", "PuertoRico" ]
+                Just [ "Spanish", "PuertoRico" ]
 
             else if List.member region likeBrazil then
-                [ "Spanish", "Brazil" ]
+                Just [ "Spanish", "Brazil" ]
 
             else if List.member region likeArgentina then
-                [ "Spanish", "Argentina" ]
+                Just [ "Spanish", "Argentina" ]
 
             else
-                [ "Spanish" ]
+                Just [ "Spanish" ]
 
         [ "English", "UnitedKingdom" ] ->
-            [ "English" ]
+            Just [ "English" ]
 
         [ "English", _ ] ->
             if Dict.get "MF" territories == Just "St. Martin" then
-                [ "English" ]
+                Just [ "English" ]
 
             else
-                [ "English", "UnitedKingdom" ]
+                Just [ "English", "UnitedKingdom" ]
 
         [ "Portuguese", "Portugal" ] ->
-            [ "Portuguese" ]
+            Just [ "Portuguese" ]
 
         [ "Portuguese", _ ] ->
-            [ "Portuguese", "Portugal" ]
+            Just [ "Portuguese", "Portugal" ]
+
+        [ _ ] ->
+            Nothing
 
         _ ->
             moduleName
                 |> List.reverse
                 |> List.drop 1
                 |> List.reverse
+                |> Just
 
 
 likeBrazil : List String
@@ -1265,82 +1285,22 @@ toVariantName input =
 {-| Returns nothing if it's identical to the parent language.
 -}
 countryCodeToNameDeclaration :
-    { parentModuleName : ModuleName }
-    ->
-        Maybe
-            { fullEnglishName : String
-            , data : LocaleData
-            }
+    Maybe
+        { moduleName : ModuleName
+        , fullEnglishName : String
+        , data : LocaleData
+        }
     ->
         { fullEnglishName : String
         , territories : Dict String String
         }
     -> Dict ModuleName ModuleStatus
     -> Result String (Maybe Elm.Declaration)
-countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, territories } modulesStatus =
+countryCodeToNameDeclaration maybeParent { fullEnglishName, territories } modulesStatus =
     let
         countryCodeAnnotation : Annotation
         countryCodeAnnotation =
             Annotation.namedWith [ "Cldr" ] "CountryCode" []
-
-        parentFunction : Result String Elm.Expression
-        parentFunction =
-            let
-                go : List String -> Result String Elm.Expression
-                go name =
-                    case Dict.get name modulesStatus of
-                        Nothing ->
-                            Err ("Could not find module info for " ++ String.join "." name)
-
-                        Just status ->
-                            case status.territories of
-                                Present ->
-                                    Elm.value
-                                        { importFrom = "Cldr" :: name
-                                        , name = "countryCodeToName"
-                                        , annotation = Just <| Annotation.function [ countryCodeAnnotation ] Annotation.string
-                                        }
-                                        |> Ok
-
-                                Absent absent ->
-                                    go absent
-            in
-            go parentModuleName
-
-        parentTerritories : Maybe (Dict String String)
-        parentTerritories =
-            parent
-                |> Maybe.map (\{ data } -> data.territories)
-
-        branches : List Elm.Case.Branch
-        branches =
-            allCountryCodes
-                |> List.filterMap
-                    (\countryCode ->
-                        let
-                            countryCodeClean : String
-                            countryCodeClean =
-                                String.replace "_" "" countryCode
-                        in
-                        Dict.get countryCodeClean territories
-                            |> Maybe.andThen
-                                (\name ->
-                                    let
-                                        parentName : Maybe String
-                                        parentName =
-                                            parentTerritories
-                                                |> Maybe.andThen (Dict.get countryCodeClean)
-                                    in
-                                    if Just name == parentName then
-                                        Nothing
-
-                                    else
-                                        Just <|
-                                            Elm.Case.branch
-                                                (Elm.Arg.customType countryCode ())
-                                                (\_ -> Elm.string name)
-                                )
-                    )
 
         table : String
         table =
@@ -1357,51 +1317,136 @@ countryCodeToNameDeclaration { parentModuleName } parent { fullEnglishName, terr
                     )
                 |> String.join "\n"
     in
-    if List.isEmpty branches then
-        -- Nothing
-        parentFunction
-            |> Result.map
-                (\f ->
-                    f
-                        |> Elm.declaration "countryCodeToName"
-                        |> Elm.withDocumentation
-                            ("Name for `CountryCode` in "
-                                ++ fullEnglishName
-                                ++ (case parent of
-                                        Nothing ->
-                                            ".\n\n"
+    case maybeParent of
+        Just parent ->
+            let
+                branches : List Elm.Case.Branch
+                branches =
+                    allCountryCodes
+                        |> List.filterMap
+                            (\countryCode ->
+                                let
+                                    countryCodeClean : String
+                                    countryCodeClean =
+                                        String.replace "_" "" countryCode
+                                in
+                                Dict.get countryCodeClean territories
+                                    |> Maybe.andThen
+                                        (\name ->
+                                            let
+                                                parentName : Maybe String
+                                                parentName =
+                                                    Dict.get countryCodeClean parent.data.territories
+                                            in
+                                            if Just name == parentName then
+                                                Nothing
 
-                                        Just pt ->
-                                            ".\n\nThis is identical to the " ++ pt.fullEnglishName ++ " version.\n\n"
-                                   )
-                                ++ table
+                                            else
+                                                Just <|
+                                                    Elm.Case.branch
+                                                        (Elm.Arg.customType countryCode ())
+                                                        (\_ -> Elm.string name)
+                                        )
                             )
-                        |> Elm.expose
-                        |> Just
-                )
 
-    else
-        parentFunction
-            |> Result.map
-                (\f ->
-                    Elm.fn (Elm.Arg.varWith "countryCode" countryCodeAnnotation)
-                        (\countryCodeExpr ->
-                            (if List.length branches == List.length allCountryCodes then
-                                branches
+                parentFunction : Result String Elm.Expression
+                parentFunction =
+                    let
+                        go : List String -> Result String Elm.Expression
+                        go name =
+                            case Dict.get name modulesStatus of
+                                Nothing ->
+                                    Err ("Could not find module info for " ++ String.join "." name)
 
-                             else
-                                branches
-                                    ++ [ Elm.Case.branch Elm.Arg.ignore
-                                            (\_ -> Elm.apply f [ countryCodeExpr ])
-                                       ]
-                            )
-                                |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
+                                Just status ->
+                                    case status.territories of
+                                        Present ->
+                                            Elm.value
+                                                { importFrom = "Cldr" :: name
+                                                , name = "countryCodeToName"
+                                                , annotation = Just <| Annotation.function [ countryCodeAnnotation ] Annotation.string
+                                                }
+                                                |> Ok
+
+                                        Absent absent ->
+                                            go absent
+                    in
+                    go parent.moduleName
+            in
+            parentFunction
+                |> Result.map
+                    (\f ->
+                        let
+                            ( identicalNote, implementation ) =
+                                if List.isEmpty branches then
+                                    ( "This is identical to the "
+                                        ++ parent.fullEnglishName
+                                        ++ " version.\n\n"
+                                    , f
+                                    )
+
+                                else
+                                    ( ""
+                                    , Elm.fn (Elm.Arg.varWith "countryCode" countryCodeAnnotation)
+                                        (\countryCodeExpr ->
+                                            (if List.length branches == List.length allCountryCodes then
+                                                branches
+
+                                             else
+                                                branches
+                                                    ++ [ Elm.Case.branch Elm.Arg.ignore
+                                                            (\_ -> Elm.apply f [ countryCodeExpr ])
+                                                       ]
+                                            )
+                                                |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
+                                        )
+                                    )
+                        in
+                        (implementation
+                            |> Elm.declaration "countryCodeToName"
+                            |> Elm.withDocumentation
+                                ("Name for `CountryCode` in "
+                                    ++ fullEnglishName
+                                    ++ ".\n\n"
+                                    ++ identicalNote
+                                    ++ table
+                                )
                         )
-                        |> Elm.declaration "countryCodeToName"
-                        |> Elm.withDocumentation ("Name for `CountryCode` in " ++ fullEnglishName ++ ".\n\n" ++ table)
-                        |> Elm.expose
-                        |> Just
+                            |> Elm.expose
+                            |> Just
+                    )
+
+        Nothing ->
+            let
+                branches : List Elm.Case.Branch
+                branches =
+                    allCountryCodes
+                        |> List.filterMap
+                            (\countryCode ->
+                                let
+                                    countryCodeClean : String
+                                    countryCodeClean =
+                                        String.replace "_" "" countryCode
+                                in
+                                Dict.get countryCodeClean territories
+                                    |> Maybe.map
+                                        (\name ->
+                                            Elm.Case.branch
+                                                (Elm.Arg.customType countryCode ())
+                                                (\_ -> Elm.string name)
+                                        )
+                            )
+            in
+            Elm.fn (Elm.Arg.varWith "countryCode" countryCodeAnnotation)
+                (\countryCodeExpr ->
+                    branches
+                        |> Elm.Case.custom countryCodeExpr countryCodeAnnotation
                 )
+                |> Elm.declaration "countryCodeToName"
+                |> Elm.withDocumentation ("Name for `CountryCode` in " ++ fullEnglishName ++ ".\n\n" ++ table)
+                |> Elm.expose
+                |> Just
+                |> Ok
 
 
 cleanName : String -> String
