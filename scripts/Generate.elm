@@ -825,7 +825,7 @@ generate english files =
                                     }
                                     acc.modulesStatus
                             of
-                                Ok (Just declaration) ->
+                                Ok declaration ->
                                     { acc
                                         | languageFiles =
                                             Elm.file ("Cldr" :: moduleName)
@@ -836,21 +836,6 @@ generate english files =
                                             Dict.insert moduleName
                                                 { territories = Present }
                                                 acc.modulesStatus
-                                        , allLocales = Dict.insert data.key data acc.allLocales
-                                    }
-                                        |> Ok
-
-                                Ok Nothing ->
-                                    { acc
-                                        | modulesStatus =
-                                            case parentModuleName of
-                                                Nothing ->
-                                                    acc.modulesStatus
-
-                                                Just name ->
-                                                    Dict.insert moduleName
-                                                        { territories = Absent name }
-                                                        acc.modulesStatus
                                         , allLocales = Dict.insert data.key data acc.allLocales
                                     }
                                         |> Ok
@@ -1295,7 +1280,7 @@ countryCodeToNameDeclaration :
         , territories : Dict String String
         }
     -> Dict ModuleName ModuleStatus
-    -> Result String (Maybe Elm.Declaration)
+    -> Result String Elm.Declaration
 countryCodeToNameDeclaration maybeParent { fullEnglishName, territories } modulesStatus =
     let
         countryCodeAnnotation : Annotation
@@ -1413,7 +1398,6 @@ countryCodeToNameDeclaration maybeParent { fullEnglishName, territories } module
                                 )
                         )
                             |> Elm.expose
-                            |> Just
                     )
 
         Nothing ->
@@ -1445,7 +1429,6 @@ countryCodeToNameDeclaration maybeParent { fullEnglishName, territories } module
                 |> Elm.declaration "countryCodeToName"
                 |> Elm.withDocumentation ("Name for `CountryCode` in " ++ fullEnglishName ++ ".\n\n" ++ table)
                 |> Elm.expose
-                |> Just
                 |> Ok
 
 
