@@ -464,6 +464,7 @@ localeToEnglishNameDeclaration allLocales =
                             |> Ok
                 , otherwise = Gen.Maybe.make_.nothing
                 }
+                |> Result.mapError (\es -> List.Nonempty.head es |> never)
                 |> Result.Extra.merge
     in
     implementation
@@ -493,6 +494,7 @@ localeToNativeNameDeclaration allLocales =
                             Ok (Just <| Gen.Maybe.make_.just <| Elm.string fullNativeName)
                 , otherwise = Gen.Maybe.make_.nothing
                 }
+                |> Result.mapError (\es -> List.Nonempty.head es |> never)
                 |> Result.Extra.merge
     in
     implementation
@@ -512,10 +514,10 @@ localeToNativeNameDeclaration allLocales =
 caseOnLocale :
     List Locale
     ->
-        { case_ : Locale -> Result e (Maybe Elm.Expression)
+        { case_ : Locale -> ResultME e (Maybe Elm.Expression)
         , otherwise : Elm.Expression
         }
-    -> Result e (Elm.Expression -> Elm.Expression)
+    -> ResultME e (Elm.Expression -> Elm.Expression)
 caseOnLocale allLocales { case_, otherwise } =
     allLocales
         |> List.map
@@ -529,27 +531,25 @@ caseOnLocale allLocales { case_, otherwise } =
             )
         |> List.sortWith
             (\( l, _ ) ( r, _ ) -> sortSplitLocale l r)
-        |> Result.Extra.foldlWhileOk
-            (\( splat, locale ) acc ->
+        |> combineFilterMap
+            (\( splat, locale ) ->
                 case case_ locale of
                     Ok Nothing ->
-                        Ok acc
+                        Ok Nothing
 
                     Ok (Just expr) ->
-                        Ok
-                            (Elm.Case.branch
-                                (Elm.Arg.list (\_ _ -> expr)
-                                    |> Elm.Arg.items (List.map Elm.Arg.string splat)
-                                    |> Elm.Arg.listRemaining "_"
-                                )
-                                identity
-                                :: acc
+                        Elm.Case.branch
+                            (Elm.Arg.list (\_ _ -> expr)
+                                |> Elm.Arg.items (List.map Elm.Arg.string splat)
+                                |> Elm.Arg.listRemaining "_"
                             )
+                            identity
+                            |> Just
+                            |> Ok
 
                     Err e ->
                         Err e
             )
-            []
         |> Result.map
             (\cases input ->
                 Elm.Case.custom
@@ -768,103 +768,81 @@ generate english files =
                         in
                         ResultME.error ("Error for " ++ key ++ ": " ++ msg)
     in
-    Dict.foldl
-        (\k _ o ->
-            ResultME.andThen
-                (\acc ->
-                    case k of
-                        [ key, "territories.json" ] ->
-                            case tryAddDictionary key of
-                                Ok (Just ( moduleName, v )) ->
-                                    Ok (Dict.insert moduleName v acc)
+    files
+        |> Dict.keys
+        |> combineFilterMap
+            (\k ->
+                case k of
+                    [ key, "territories.json" ] ->
+                        tryAddDictionary key
 
-                                Ok Nothing ->
-                                    Ok acc
-
-                                Err e ->
-                                    Err e
-
-                        _ ->
-                            Ok acc
-                )
-                o
-        )
-        (Ok Dict.empty)
-        files
+                    _ ->
+                        Ok Nothing
+            )
+        |> ResultME.map Dict.fromList
         |> ResultME.andThen
             (\allDictionaries ->
-                let
-                    foldResult =
-                        allDictionaries
-                            |> Dict.toList
-                            |> List.sortBy
-                                (\( moduleName, { data } ) ->
-                                    ( List.length moduleName
-                                    , List.length (getParentModule data.territories moduleName)
-                                    )
-                                )
-                            |> Result.Extra.foldlWhileOk
-                                (\( moduleName, { fullEnglishName, data } ) acc ->
-                                    let
-                                        parentModuleName : ModuleName
-                                        parentModuleName =
-                                            getParentModule data.territories moduleName
-
-                                        parent :
-                                            Maybe
-                                                { fullEnglishName : String
-                                                , data : LocaleData
-                                                }
-                                        parent =
-                                            Dict.get parentModuleName allDictionaries
-                                    in
-                                    case
-                                        countryCodeToNameDeclaration
-                                            { parentModuleName = parentModuleName }
-                                            parent
-                                            { fullEnglishName = fullEnglishName
-                                            , territories = data.territories
-                                            }
-                                            acc.modulesStatus
-                                    of
-                                        Ok (Just declaration) ->
-                                            { acc
-                                                | allFiles =
-                                                    Elm.file ("Cldr" :: moduleName)
-                                                        [ declaration
-                                                        ]
-                                                        :: acc.allFiles
-                                                , modulesStatus =
-                                                    Dict.insert moduleName
-                                                        { territories = Present }
-                                                        acc.modulesStatus
-                                                , allLocales = Dict.insert data.key data acc.allLocales
-                                            }
-                                                |> Ok
-
-                                        Ok Nothing ->
-                                            { acc
-                                                | modulesStatus =
-                                                    Dict.insert moduleName
-                                                        { territories = Absent parentModuleName }
-                                                        acc.modulesStatus
-                                                , allLocales = Dict.insert data.key data acc.allLocales
-                                            }
-                                                |> Ok
-
-                                        Err e ->
-                                            ResultME.error e
-                                )
-                                { allFiles = [], modulesStatus = Dict.empty, allLocales = Dict.empty }
-                in
-                foldResult
-                    |> ResultME.map
-                        (\{ allFiles, modulesStatus, allLocales } ->
-                            { modulesStatus = modulesStatus
-                            , languageFiles = allFiles
-                            , allLocales = allLocales
-                            }
+                allDictionaries
+                    |> Dict.toList
+                    |> List.sortBy
+                        (\( moduleName, { data } ) ->
+                            ( List.length moduleName
+                            , List.length (getParentModule data.territories moduleName)
+                            )
                         )
+                    |> Result.Extra.foldlWhileOk
+                        (\( moduleName, { fullEnglishName, data } ) acc ->
+                            let
+                                parentModuleName : ModuleName
+                                parentModuleName =
+                                    getParentModule data.territories moduleName
+
+                                parent :
+                                    Maybe
+                                        { fullEnglishName : String
+                                        , data : LocaleData
+                                        }
+                                parent =
+                                    Dict.get parentModuleName allDictionaries
+                            in
+                            case
+                                countryCodeToNameDeclaration
+                                    { parentModuleName = parentModuleName }
+                                    parent
+                                    { fullEnglishName = fullEnglishName
+                                    , territories = data.territories
+                                    }
+                                    acc.modulesStatus
+                            of
+                                Ok (Just declaration) ->
+                                    { acc
+                                        | languageFiles =
+                                            Elm.file ("Cldr" :: moduleName)
+                                                [ declaration
+                                                ]
+                                                :: acc.languageFiles
+                                        , modulesStatus =
+                                            Dict.insert moduleName
+                                                { territories = Present }
+                                                acc.modulesStatus
+                                        , allLocales = Dict.insert data.key data acc.allLocales
+                                    }
+                                        |> Ok
+
+                                Ok Nothing ->
+                                    { acc
+                                        | modulesStatus =
+                                            Dict.insert moduleName
+                                                { territories = Absent parentModuleName }
+                                                acc.modulesStatus
+                                        , allLocales = Dict.insert data.key data acc.allLocales
+                                    }
+                                        |> Ok
+
+                                Err e ->
+                                    ResultME.error e
+                        )
+                        { languageFiles = [], modulesStatus = Dict.empty, allLocales = Dict.empty }
             )
 
 
