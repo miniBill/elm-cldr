@@ -15,7 +15,9 @@
             "elm/json": "1.1.4",
             "elmcraft/core-extra": "2.3.0",
             "mdgriffith/elm-codegen": "6.0.3",
-            "rl-king/elm-iso3166-country-codes": "2.0.1"
+            "mgold/elm-nonempty-list": "4.2.0",
+            "rl-king/elm-iso3166-country-codes": "2.0.1",
+            "the-sett/elm-error-handling": "2.3.0"
         },
         "indirect": {
             "BrianHicks/elm-string-graphemes": "1.0.4",
